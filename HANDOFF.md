@@ -51,8 +51,12 @@ Four implementations of the SU(2) FFT, plus three derived transforms:
 | `su2_fft_inv_gl`      | inverse at GL theta nodes         | O(N^4)        | shipped (bead `ega`) |
 | `su2_fft_resolved`    | forward, open P=2N-1 phi/psi + GL theta; exact roundtrip | O(N^4) | shipped (bead `0t1`) |
 | `su2_fft_resolved_inv`| inverse on resolved grid          | O(N^4)        | shipped (bead `0t1`) |
-| `su2_ft_direct_arb`   | arb (acb_t) direct reference      | brute O(N^6)  | shipped    |
-| `su2_fft_arb`         | arb fast                          | O(N^5) wigner | shipped (recurrence not yet ported — `2r2`) |
+| `su2_ft_direct_arb`   | arb (acb_t) direct reference (legacy closed) | brute O(N^6)  | shipped    |
+| `su2_fft_arb`         | arb fast (legacy closed)          | O(N^5) wigner | shipped (recurrence not yet ported — `2r2`) |
+| `su2_ft_direct_resolved_arb` | arb direct, resolved grid  | brute O(N^6)  | shipped (bead `rrx`) |
+| `su2_fft_resolved_arb`| arb fast forward, resolved grid   | O(N^4)        | shipped (bead `rrx`) |
+| `su2_fft_resolved_inv_arb` | arb inverse, resolved grid   | O(N^4)        | shipped (bead `rrx`) |
+| `su2_gl_nodes_weights_arb` | arb GL via `arb_hypgeom_legendre_p_ui_root` | O(N) | shipped (bead `rrx`) |
 | `su2_convolve`        | per-l matrix product in spectrum  | O(N^4)        | shipped (bead `d7v`) |
 | `su2_fft_sphere(_inv)`| S^2 = SU(2)/U(1) thin wrapper     | O(N^4)        | shipped (bead `5fb`) |
 | `su2_wigner_d_half`   | half-integer Wigner-d evaluation  | O(l)          | shipped (bead `n8e` Tier 1) |
@@ -96,15 +100,30 @@ and remain in the test suite as regression bounds, not as goals.  They are still
 useful for applications that trade precision for a smaller sample budget
 (`N^3` vs `(2N-1)^2 * N` samples).
 
-**The new structural insight.**  The forward analysis on the resolved grid is
-exact at working precision.  Spectrum roundtrip at N=8 is 4.45e-15 -- the limit
-is floating-point accumulation in the Wigner recurrence, not grid aliasing.  The
-next frontier is the arb-precision port (bead `su2fft-rrx`), which will deliver
-certified roundtrip at user-chosen precision (e.g. 256-bit -> roundtrip < 1e-70).
-`rrx` requires `acb_dft_prod` with `cyc={P,P}` (arbitrary-size DFT; confirmed
-in FLINT 3.0), `arb_hypgeom_legendre_p_ui_root` for arb GL nodes (confirmed in
-`/usr/include/flint/arb_hypgeom.h`), and the arb Wigner recurrence already in
-`src/su2_wigner_arb.c`.
+**Arb-precision certified roundtrip.**  Bead `rrx` shipped the arb resolved
+path: `su2_fft_resolved_arb` / `su2_fft_resolved_inv_arb` plus
+`su2_gl_nodes_weights_arb` (wraps FLINT `arb_hypgeom_legendre_p_ui_root`) and
+`su2_ft_direct_resolved_arb` (O(N^6) arb reference for the cross-check).
+Achieved tolerances (`tests/test_resolved_arb`, all PASS):
+
+- Spectrum roundtrip at prec=128 (max relative error):
+  - N=4:  1.29e-35
+  - N=8:  2.17e-33
+- **Spectrum roundtrip at prec=256:**
+  - **N=4:  4.29e-74**
+  - **N=8:  4.40e-72**
+- fast vs arb-direct at prec=128: 4.54e-38 (N=4), 9.32e-38 (N=5).
+- arb-vs-double cross-check at prec=53: 4.80e-17 (N=5).
+
+The arb path's roundtrip error scales as ~2^-prec, confirming the roundtrip
+is exact up to the working precision rather than limited by algorithmic
+accumulation. Users who need >double-precision Fourier analysis on SU(2) can
+set `prec` to whatever the application demands.
+
+The arb-precision certification is the principal differentiator of this
+codebase relative to SOFT 2.0 / s2fft / SHTns (see §10 for the comparison
+table); the structural divide-and-conquer FFT is from the Driscoll-Healy /
+Healy-Rockmore lineage, and the grid convention is community-standard.
 
 ---
 
@@ -176,24 +195,12 @@ bd close <id> --reason "shipped in <hash>"
 bd dep tree <id>                  # see what's blocking or blocked
 ```
 
-**Recommended next move: `su2fft-rrx` (arb-precision resolved-grid roundtrip).**
-`0t1` is closed.  The double-precision resolved path achieves spectrum roundtrip
-4.45e-15 at N=8.  `rrx` extends this to user-chosen precision using FLINT arb:
+**`0t1` and `rrx` are both closed.**  The resolved-grid double path (4.45e-15
+roundtrip at N=8) and the arb-precision certified roundtrip (4.40e-72 at N=8,
+prec=256) ship together. The certified-roundtrip arc the project was working
+toward is complete.
 
-- Stage 1: `acb_dft_prod(w, v, cyc={P,P}, num=2, prec)` — accepts arbitrary
-  `cyc[]`; for P=2N-1 FLINT routes through Bluestein/CRT internally.
-- Stage 2: existing `src/su2_wigner_arb.c` recurrence with `acb_t` accumulators.
-- GL nodes at arb precision: `arb_hypgeom_legendre_p_ui_root(res, weight, n, k,
-  prec)` (FLINT 3.0+, confirmed in `/usr/include/flint/arb_hypgeom.h`) returns
-  both the k-th root of P_n and its GL weight; no manual Newton iteration needed.
-- Norm: `1/(2 P^2)` in arb arithmetic; trivially computed.
-- Cross-check: arb resolved vs double resolved at prec=53 should agree to 1e-13;
-  spectrum roundtrip at prec=256 should hit < 1e-70.
-
-The design brief is in `notes/0t1_resolved_grid_design.md §8`.  Estimated 200-400
-LOC (mirrors `src/su2_fft_arb.c` but with `cyc={P,P}` and arb GL nodes).
-
-After `rrx`, the natural sequence is:
+**Recommended next moves** — pick from:
 1. `cvh` (SIMD inner product) — perf, the inner-product is ~11 % of wall;
    AVX2 should ~3x it.
 2. `lg8` (OpenMP over outer (l, m, n) loop) — perf, near-linear on 8 cores.
@@ -220,6 +227,7 @@ After `rrx`, the natural sequence is:
 | `d7v`   | SU(2) convolution via spectrum                | `src/su2_convolve.c` header             |
 | `5fb`   | Spherical FFT on S^2 (thin wrapper)           | `src/su2_sphere.c` header               |
 | `0t1`   | Resolved-grid FFT (open P=2N-1 phi/psi + GL theta; exact spectrum roundtrip 4.45e-15 at N=8) | `notes/0t1_resolved_grid_design.md` |
+| `rrx`   | Arb-precision resolved-grid roundtrip (4.40e-72 at N=8, prec=256) | `notes/0t1_resolved_grid_design.md` §8; `tests/test_resolved_arb.c` |
 
 The `notes/` design briefs are gold — they contain the math derivations,
 the failure modes that were caught during research, and the implementation
@@ -330,7 +338,42 @@ These cost time when you don't know them.
 
 ---
 
-## 10. Where the user is reachable for ambiguities
+## 10. Prior art and what this codebase actually adds
+
+The Delgado et al. paper is openly the SU(2) extension of the
+Driscoll-Healy / Healy-Rockmore S^2 FFT lineage; `paper.tex` lines 232 and 598
+cite "FFTs for the 2-sphere -- Improvements and Variations" (Healy, Rockmore,
+Kostelec, Moore 2003) as the primary inspiration. The closest existing
+implementations:
+
+| Library | Group | Grid | Precision | Wigner-d |
+|---|---|---|---|---|
+| **SOFT 2.0** (Kostelec-Rockmore, C) | SO(3) | 2B open + GL beta | double | integer-l |
+| **s2fft** (Price-McEwen, JAX) | SO(3) | 2L+1 open + GL | float32/64 | integer-l |
+| **SHTns** (Schaeffer, C) | S^2 | 2L+1 open + GL | double | integer-l |
+| **su2-fft** (this repo, C+FLINT) | SU(2) | 2N-1 open + GL (`_resolved`) | double + arb (any prec) | integer-l shipped; half-integer in `n8e`/`u9q` |
+
+The grid convention `_resolved` adopts (open P = 2N-1 + GL theta) is the
+community standard shared by all three references above. The contribution of
+this codebase is the engineering -- C + FLINT + FFTW with cross-validated
+double/arb paths -- and three substantive additions:
+
+1. **Arb-precision certification.** No surveyed library carries certified
+   ball-arithmetic bounds. `test_resolved_arb` headlines at 4.40e-72 relative
+   roundtrip error at N=8, prec=256 (bead `rrx`).
+2. **Half-integer Wigner-d.** SOFT/s2fft target SO(3) (integer-l only); the
+   half-integer FFT (bead `u9q`) and SO(3)-via-Z_2-quotient (`erv`) are
+   forthcoming.
+3. **Plain C + literate updates.** No JAX/Python build chain; every
+   non-trivial formula in `src/` cites a paper line; the design briefs in
+   `notes/` are gold-standard.
+
+When asked "is this reinventing wheels?", the honest answer is: the FFT
+recipe yes, the arb-prec certification + half-integer support + clean C/FLINT
+implementation no. Position any new feature against this table before claiming
+novelty.
+
+## 11. Where the user is reachable for ambiguities
 
 GitHub: https://github.com/tobiasosborne/su2-fft (issues/PRs).
 For paper-math disambiguation, the paper itself plus the four notes/

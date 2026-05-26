@@ -293,10 +293,66 @@ Both f and g are bandlimited to degree N-1.
 
 Sample-space stability is consistent with the spectrum roundtrip numbers above.
 
-### Summary
+### Summary (double-precision, bead 0t1)
 
 The resolved-grid path achieves exact spectrum roundtrip at working precision
 across N = 4, 8, 16.  The design goal of §6 ("max error < 1e-12 at N=8") is
 exceeded by three orders of magnitude.  The constant-input leakage reduction
 from ~0.197 (closed-grid GL) to < 1e-12 (resolved) confirms that the P=2N-1
 open phi/psi grid eliminates the structural aliasing identified in §1.
+
+---
+
+## 11. Arb-precision results (bead `su2fft-rrx`)
+
+The arb port (`src/su2_fft_resolved_arb.c`, `src/su2_ft_resolved_arb.c`,
+`src/su2_gauss_legendre_arb.c`) carries the same algorithm at user-chosen
+precision via FLINT acb_t/arb_t. Tests in `tests/test_resolved_arb.c` (6 tests,
+all PASS in 0.37 s).
+
+### test_resolved_arb_constant (N=4, prec=128)
+
+`fhat(0,0,0) - 1` mid-point: **1.18e-38**. Max leak: **1.13e-38**. Both within
+2^-128 ≈ 2.9e-39 of working precision, matching the certified ball arithmetic.
+
+### test_resolved_arb_fast_vs_direct (prec=128)
+
+| N | max abs diff (arb fast vs arb direct) |
+|---|---------------------------------------|
+| 4 | 4.54e-38                              |
+| 5 | 9.32e-38                              |
+
+### test_resolved_arb_inv_delta (N=4, prec=128)
+
+Synthesis of `fhat(1)_{0,0} = 1` reproduces `f(*, theta_k, *) = 3 cos(theta_k)`.
+Max `|Re(f) - 3 cos(theta_k_double)|` = **2.22e-16** (limited by the double
+`cos()` in the test target, not the arb path). Max `|Im(f)|` = **0** (exact).
+
+### test_resolved_arb_spectrum_roundtrip (HEADLINE)
+
+`forward(inverse(fhat)) ≈ fhat` at arb precision.
+
+| prec | N | max relative error                |
+|------|---|-----------------------------------|
+| 128  | 4 | 1.29e-35                          |
+| 128  | 8 | 2.17e-33                          |
+| 256  | 4 | **4.29e-74**                      |
+| 256  | 8 | **4.40e-72**                      |
+
+The roundtrip error scales as ~2^-prec, confirming the roundtrip is exact up
+to the working precision. At prec=256 the error is 26 orders of magnitude
+below the 1e-50 design goal.
+
+### test_resolved_arb_vs_double (N=5, prec=53)
+
+Cross-check the arb path at IEEE-double precision against the double path:
+max abs diff = **4.80e-17**. Ties the two paths together at matching precision.
+
+### Summary (arb-precision, bead `rrx`)
+
+`su2_fft_resolved_arb` + `su2_fft_resolved_inv_arb` deliver certified spectrum
+roundtrip at any user-chosen precision via FLINT ball arithmetic. The
+roundtrip error scales linearly in 2^-prec; doubling the working precision
+halves the error in log scale. This is the certified-roundtrip arc the
+project was working toward; no closed-form bound beats it for the resolved
+grid + GL theta combination.

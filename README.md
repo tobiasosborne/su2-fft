@@ -390,6 +390,52 @@ The quantum signal processing motivation draws on:
 > processing and its applications" (2024), cited as [bastidas2024complexification]
 > in the paper bibliography.
 
+### Prior art
+
+The Delgado et al. algorithm is itself an SU(2) extension of the
+divide-and-conquer FFT lineage on S^2 and SO(3). The relevant prior work,
+in roughly chronological order:
+
+> Driscoll, J. R. and Healy, D. M., "Computing Fourier transforms and
+> convolutions on the 2-sphere", Adv. Appl. Math. 15 (1994) 202-250.
+
+> Healy, D. M., Rockmore, D. N., Kostelec, P. J. and Moore, S. S. B.,
+> "FFTs for the 2-Sphere -- Improvements and Variations", J. Fourier Anal.
+> Appl. 9 (2003) 341-385. Cited as `\cite{2-sphere}` in `paper.tex` lines 232
+> and 598 as the **primary inspiration** for Delgado et al.
+
+> Kostelec, P. J. and Rockmore, D. N., "FFTs on the Rotation Group",
+> J. Fourier Anal. Appl. 14 (2008) 145-179. The C library **SOFT 2.0** that
+> ships with this paper is the closest existing implementation of an SO(3)
+> FFT and uses an open uniform alpha/gamma grid + Gauss-Legendre beta, the
+> same convention we adopt in `su2_fft_resolved` (bead `su2fft-0t1`).
+
+> Price, M. A. and McEwen, J. D., "Differentiable and accelerated
+> spherical harmonic and Wigner transforms", JCP (2024), arXiv:2311.14670.
+> The JAX-based **s2fft** library implements the integer-l SO(3) Wigner
+> transform; its Gauss-Legendre sampling mode uses P = 2L+1 open uniform
+> in alpha/gamma, identical to the resolved-grid convention here.
+
+What `su2-fft` adds beyond these references:
+1. **Arbitrary-precision certification** via FLINT `acb_t` ball arithmetic.
+   SOFT 2.0 is double-precision only; s2fft is float32/64 JAX. The arb path
+   delivers spectrum roundtrip at user-chosen precision -- 4.40e-72 relative
+   error at N=8, prec=256 in `test_resolved_arb` -- which neither surveyed
+   library provides.
+2. **Half-integer Wigner-d evaluation** (bead `su2fft-n8e` Tier 1). SOFT and
+   s2fft target integer-l SO(3); half-integer (true SU(2)) is out of scope
+   for them. Full half-integer FFT is tracked as bead `su2fft-u9q`.
+3. **Cross-validated four-path implementation** (direct/fast x double/arb).
+   The gold-standard `test_resolved_arb_fast_vs_direct` cross-check at
+   prec=128 catches algorithmic errors that single-precision unit tests
+   cannot.
+
+The structural divide-and-conquer FFT is not novel to this codebase; the
+contribution is in the C+FLINT engineering, the arbitrary-precision
+certification, and the half-integer support. The grid convention
+(P = 2L+1 open phi/psi + Gauss-Legendre theta) is the community standard
+shared with SOFT 2.0 and s2fft.
+
 ### Libraries
 
 - **FFTW3** (Matteo Frigo, Steven G. Johnson). Powers Stage-1 2-D backward
