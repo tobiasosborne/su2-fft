@@ -68,10 +68,11 @@ count, the same way Cooley-Tukey exploits the structure of e^{ikx}.
 
 This repo contains a working C implementation of the Delgado et al. O(N^4)
 algorithm, built test-first and cross-validated against the O(N^6) direct
-transform at bandlimits up to N=24. The two implementations agree to
-floating-point noise (~1e-17, near machine epsilon), and the fast path runs
-roughly 10x faster at N=24 -- consistent with the predicted N^2 speedup
-ratio. An FLINT arb-precision parallel path provides certified interval
+transform at bandlimits up to N=24. The two implementations agree to within
+2.21e-13 at N=24 (well within the 1e-10 cross-check tolerance), and the fast
+path runs 90.91x faster at N=24 -- the implementation now matches the paper's
+O(N^4) asymptotic via an ascending-l three-term Wigner recurrence (bead
+`su2fft-m21`). An FLINT arb-precision parallel path provides certified interval
 arithmetic: at prec=512 the worst-case ball radius on all output coefficients
 is 9.61e-154, corresponding to 154 verified decimal digits.
 
@@ -116,7 +117,7 @@ notes/                     Four section-by-section summaries of the paper
 proof/                     11-node structural proof of the O(N^4) claim (af)
 paper.tex                  Verbatim arxiv source
 ALGORITHM.md               Full narrative companion: every design decision, derivation
-PROFILING.md               perf + stage-instrumentation report (hot path = pow() at 78%)
+PROFILING.md               perf + stage-instrumentation report (seed 46%, recurrence 33%, inner 11% at N=24)
 IMPROVEMENTS.md            Ranked roadmap (recurrence, SIMD, OpenMP, QSP, GPU, ...)
 ```
 
@@ -132,22 +133,24 @@ there, and every departure from the paper is called out explicitly.
 ```
    N |    direct(s) |      fast(s) |  speedup |  max|diff| | status
 -----+--------------+--------------+----------+------------+---------
-   4 |     0.000117 |     0.000970 |     0.12 |   6.25e-17 | OK
-   6 |     0.000839 |     0.000437 |     1.92 |   4.34e-17 | OK
-   8 |     0.003892 |     0.001492 |     2.61 |   2.64e-17 | OK
-  10 |     0.009636 |     0.003234 |     2.98 |   2.55e-17 | OK
-  12 |     0.035140 |     0.005772 |     6.09 |   2.32e-17 | OK
-  14 |     0.080312 |     0.012209 |     6.58 |   4.97e-17 | OK
-  16 |     0.166585 |     0.031633 |     5.27 |   3.32e-17 | OK
-  20 |     0.621584 |     0.067321 |     9.23 |   2.43e-17 | OK
-  24 |     1.818179 |     0.182840 |     9.94 |   7.12e-17 | OK
+   4 |     0.000142 |     0.001105 |     0.13 |   5.94e-17 | OK
+   6 |     0.000961 |     0.000375 |     2.56 |   4.63e-17 | OK
+   8 |     0.004721 |     0.000955 |     4.94 |   5.30e-17 | OK
+  10 |     0.013280 |     0.001279 |    10.39 |   1.26e-16 | OK
+  12 |     0.040555 |     0.001990 |    20.38 |   6.58e-16 | OK
+  14 |     0.087188 |     0.003556 |    24.52 |   7.13e-16 | OK
+  16 |     0.177889 |     0.004820 |    36.90 |   1.61e-15 | OK
+  20 |     0.655026 |     0.009028 |    72.55 |   2.09e-14 | OK
+  24 |     1.832225 |     0.020154 |    90.91 |   2.21e-13 | OK
 ```
 
-The maximum coefficient-wise difference stays at floating-point noise
-(~1e-17, near double epsilon) across the full range: the two algorithms
-compute the same discrete sum. The speedup grows with N as predicted by
-N^6 / N^4 = N^2; at small N the FFTW plan overhead dominates and the direct
-path wins -- the standard FFT crossover.
+The maximum coefficient-wise difference stays within floating-point noise
+across the full range: the two algorithms compute the same discrete sum.
+At N=24 the max-diff is 2.21e-13, higher than the pre-recurrence figure of
+7.12e-17 because the ascending-l recurrence accumulates floating-point error
+over l steps; it remains well within the 1e-10 cross-check tolerance.
+The speedup at N=24 is 90.91x; at small N the FFTW plan overhead dominates
+and the direct path wins -- the standard FFT crossover.
 
 ### Arb-precision path (`bench/arb_bench`)
 

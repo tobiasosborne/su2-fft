@@ -29,6 +29,7 @@
  */
 #include "su2.h"
 
+#include <assert.h>
 #include <complex.h>
 #include <math.h>
 #include <stdlib.h>
@@ -106,4 +107,92 @@ double _Complex su2_wigner_d(int l, int n, int m, double theta)
 
     double d = wigner_d_phys(l, n, m, theta);
     return pow_i(m - n) * d;
+}
+
+/**
+ * @brief Fill out_d with d^l_{n,m}(theta) for l = l_min .. l_max via the
+ *        Jacobi-lifted three-term ascending-l recurrence.
+ *
+ * Spec: notes/wigner_recurrence.md §2b (recurrence) and §7 (implementation
+ * sketch).  The recurrence is the standard Jacobi P_k^{(a,b)} three-term
+ * recurrence (DLMF 18.9.1/18.9.2) lifted to d^l_{n,m} via the l-dependent
+ * normalisation R(l) = sqrt[(l+M)!(l-M)! / ((l+N)!(l-N)!)] from the
+ * Jacobi connection (Wikipedia "Wigner D-matrix", §"Relation to Jacobi
+ * polynomials"; verified against paper.tex line 739 `eq:P_l` in the
+ * m=n=0 special case, see notes/wigner_recurrence.md §2b).
+ *
+ *   d^{l+1}_{n,m}(theta) = (A_k cos(theta) + B_k) * F1 * d^l_{n,m}(theta)
+ *                        - C_k * F2 * d^{l-1}_{n,m}(theta)
+ *
+ * with k = l - M, s = 2k + a + b, M = max(|n|,|m|), Nmin = min(|n|,|m|),
+ * a = |m - n|, b = |m + n|, and
+ *
+ *   A_k = (s+1)(s+2) / [2(k+1)(k+a+b+1)]
+ *   B_k = (a^2 - b^2)(s+1) / [2(k+1)(k+a+b+1) s]
+ *   C_k = (k+a)(k+b)(s+2) / [(k+1)(k+a+b+1) s]
+ *   F1  = sqrt[(l+1+M)(l+1-M) / ((l+1+Nmin)(l+1-Nmin))]
+ *   F2  = F1 * sqrt[(l+M)(l-M) / ((l+Nmin)(l-Nmin))]
+ *
+ * Seeded at l = l_min and (when l_max > l_min) l = l_min + 1 by direct
+ * evaluation via wigner_d_phys.  By construction the first recurrence
+ * step uses k = (l_min + 1) - M = 1 (when l_min = M) or larger, so
+ * s = 2k + a + b >= 2 and the B_k, C_k denominators are nonzero; the
+ * code asserts this invariant.
+ *
+ * @par Complexity O(l_max - l_min) flops after two O(l_min) seeds.
+ */
+void su2_wigner_d_seq(int l_min, int l_max, int n, int m, double theta,
+                      double *out_d)
+{
+    /* Fail fast on out-of-range inputs (CLAUDE.md rule 5). */
+    assert(out_d != NULL);
+    assert(l_min >= 0);
+    assert(l_max >= l_min);
+    int an = abs(n), am = abs(m);
+    int M    = (an > am) ? an : am;
+    int Nmin = (an < am) ? an : am;
+    assert(l_min >= M);
+
+    /* Seed l = l_min. */
+    out_d[0] = wigner_d_phys(l_min, n, m, theta);
+    if (l_max == l_min) return;
+
+    /* Seed l = l_min + 1. */
+    out_d[1] = wigner_d_phys(l_min + 1, n, m, theta);
+
+    int a = abs(m - n);
+    int b = abs(m + n);
+    double x = cos(theta);
+
+    /* Step l -> l+1 for l = l_min+1 .. l_max-1.  notes/wigner_recurrence.md §2b. */
+    for (int l = l_min + 1; l <= l_max - 1; ++l) {
+        int k = l - M;
+        double s = (double)(2*k + a + b);
+        /* s = 0 iff k = 0 AND a = b = 0; the loop starts at k = l_min+1-M >= 1
+         * so s >= 2.  Verify the invariant. */
+        assert(s != 0.0);
+
+        double kp1  = (double)(k + 1);
+        double kab1 = (double)(k + a + b + 1);
+        double denom_k = 2.0 * kp1 * kab1;
+
+        double Ak = (s + 1.0) * (s + 2.0) / denom_k;
+        double Bk = (double)(a*a - b*b) * (s + 1.0) / (denom_k * s);
+        double Ck = (double)(k + a) * (double)(k + b) * (s + 2.0)
+                  / (kp1 * kab1 * s);
+
+        /* F1 = R(l+1)/R(l);  F2 = R(l+1)/R(l-1).  See notes §2b. */
+        double F1num = (double)((l + 1 + M) * (l + 1 - M));
+        double F1den = (double)((l + 1 + Nmin) * (l + 1 - Nmin));
+        double F1    = sqrt(F1num / F1den);
+        double F2num = (double)((l + M) * (l - M));
+        double F2den = (double)((l + Nmin) * (l - Nmin));
+        double F2    = F1 * sqrt(F2num / F2den);
+
+        int i = l - l_min;        /* d^l lives at out_d[i], d^{l-1} at out_d[i-1] */
+        double d_l    = out_d[i];
+        double d_lm1  = out_d[i - 1];
+        double d_lp1  = (Ak * x + Bk) * F1 * d_l - Ck * F2 * d_lm1;
+        out_d[i + 1]  = d_lp1;
+    }
 }

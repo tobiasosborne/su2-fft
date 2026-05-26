@@ -110,6 +110,21 @@ void su2_fft(int N,
     fftw_free(G);
 
     /* -------- Stage 2 -------- */
+    /* Recurrence-based sweep (bead su2fft-m21). For each (m, n), sweep
+     * l = l_min..N-1 via the ascending-l three-term recurrence in
+     * su2_wigner_d_seq (notes/wigner_recurrence.md). This drops Stage 2
+     * from O(N^5) (one O(l) de Moivre call per (l,m,n,k)) to O(N^4)
+     * (O(1) per recurrence step), matching the paper's headline.
+     *
+     * Identity: conj(P^l_{n,m}) = i^{n-m} * d^l_{n,m} (d real).  Pull the
+     * phase outside the k-sum:
+     *   fhat(l)_{m,n} = norm * i^{n-m} * sum_k d^l_{n,m}(theta_k)
+     *                                      * F2[k,n,m] * sin(theta_k)
+     *
+     * Loop order (m, n, k, l) minimises per-(m,n) allocation and keeps
+     * acc[l] writes contiguous; F2[k,n,m] is loaded once per (k,n,m).
+     * paper.tex line 1361 (eq EQ_OP_1).
+     */
     const double dphi   = 2.0 * M_PI / (double)(N - 1);
     const double dtheta =       M_PI / (double)(N - 1);
     const double dpsi   = 2.0 * M_PI / (double)(N - 1);
@@ -118,22 +133,46 @@ void su2_fft(int N,
     double *sin_th = malloc((size_t)N * sizeof(double));
     for (int k = 0; k < N; ++k) sin_th[k] = sin(theta[k]);
 
-    for (int l = 0; l < N; ++l) {
-        for (int m = -l; m <= l; ++m) {
-            for (int n = -l; n <= l; ++n) {
-                double _Complex acc = 0.0 + 0.0*I;
-                for (int k = 0; k < N; ++k) {
-                    double _Complex P = conj(su2_wigner_d(l, n, m, theta[k]));
-                    double _Complex f2 = F2[(size_t)k * stride_k
-                                            + (size_t)(n + N - 1) * stride_n
-                                            + (size_t)(m + N - 1)];
-                    acc += P * f2 * sin_th[k];
+    /* Per-(m,n) scratch buffers, reused across the outer loops. */
+    double          *d_seq = malloc((size_t)N * sizeof(double));
+    double _Complex *acc   = malloc((size_t)N * sizeof(double _Complex));
+
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > N - 1) continue;  /* impossible: |m|,|n| <= N-1 */
+
+            for (int l = l_min; l < N; ++l) acc[l] = 0.0 + 0.0*I;
+
+            for (int k = 0; k < N; ++k) {
+                su2_wigner_d_seq(l_min, N - 1, n, m, theta[k], d_seq);
+                double _Complex w = F2[(size_t)k * stride_k
+                                       + (size_t)(n + N - 1) * stride_n
+                                       + (size_t)(m + N - 1)] * sin_th[k];
+                for (int l = l_min; l < N; ++l) {
+                    acc[l] += d_seq[l - l_min] * w;
                 }
-                fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)] = norm * acc;
+            }
+
+            /* Apply i^{n-m} phase and norm; write to fhat.
+             * i^{n-m}: r = ((n-m) mod 4 + 4) mod 4, branch on r. */
+            int r = ((n - m) % 4 + 4) % 4;
+            double _Complex phase;
+            switch (r) {
+                case 0:  phase =  1.0 + 0.0*I; break;
+                case 1:  phase =  0.0 + 1.0*I; break;
+                case 2:  phase = -1.0 + 0.0*I; break;
+                default: phase =  0.0 - 1.0*I; break;
+            }
+            double _Complex c = norm * phase;
+            for (int l = l_min; l < N; ++l) {
+                fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)] = c * acc[l];
             }
         }
     }
 
+    free(acc);
+    free(d_seq);
     free(sin_th);
     free(F2);
     free(theta);

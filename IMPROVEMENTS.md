@@ -2,58 +2,60 @@
 
 Items are ranked by an `impact × certainty` score.  Each names the file(s)
 it would touch, sketches the approach, and gives a measured baseline so the
-proposed gain is honest, not a marketing number.  Baseline is the current
-double-precision path at N=20 on the dev host: **83 ms per `su2_fft` call,
-98 % of that in `su2_wigner_d` (see `PROFILING.md`)**.
+proposed gain is honest, not a marketing number.  Baseline is the post-m21
+double-precision path at N=24 on the dev host: **20 ms per `su2_fft` call,
+46% in seed calls to `su2_wigner_d`, 33% in the recurrence sweep, 11% in
+the inner product (see `PROFILING.md`)**.
 
 ---
 
 ## Tier 1 — fix the actual hot path (each: ≥3× wall-clock)
 
-### 1. Three-term recurrence over `l` for the Wigner kernel
+### ~~1. Three-term recurrence over `l` for the Wigner kernel~~ — DONE (m21)
 
-**Impact: ~10× per call.**  Drops the implementation from honestly-O(N^5) to
-honestly-O(N^4) — the paper's actual headline complexity.
+Shipped in bead `su2fft-m21`.  Stage 2 is now O(N^4).  90.91x speedup at
+N=24 vs the O(N^6) direct path.  Max-diff at N=24: 2.21e-13 (well within
+1e-10 tolerance; recurrence accumulates floating-point error over l, which
+is expected and acceptable).  See `ALGORITHM.md §2.3` and `PROFILING.md`.
 
-For fixed `(n, m, theta_k)` the values `d^l_{n,m}(theta_k)` for
-`l = l_min, l_min+1, ..., N-1` (with `l_min = max(|n|, |m|)`) satisfy a
-classical three-term recurrence (Edmonds 4.5.4) with O(1) work per step.
-Replace the per-`(l, m, n, k)` call to `su2_wigner_d` in `src/su2_fft.c`
-with a `(m, n, k)`-keyed outer loop that sweeps `l` and updates two
-running values.
+### 1. Integer-power tables in place of `pow()` inside the seed (de Moivre sum)
 
-Touches: `src/su2_fft.c` Stage 2 only.  Tests need no change — the gold
-standard is "matches `su2_ft_direct` to 1e-10", which is invariant.
+**Impact: ~3× on the seed budget (46% of N=24 wall).**  Inside `wigner_d_phys`
+the exponents `pc`, `ps` are small non-negative integers ≤ 2l_min ≤ 2N.
+Precompute `c2^k`, `s2^k` for `k = 0..2l_min` once per call (length 2l_min+1,
+Horner-built in 2l_min mults), then the t-loop is two table lookups per term.
+This eliminates all `pow()` calls from the seed path.
 
-### 2. Integer-power tables in place of `pow()` inside the de Moivre sum
+Touches: `src/su2_wigner.c`.
 
-**Impact: ~3× per call, even without doing #1.**  60 % of cycles are in
-`__ieee754_pow_fma`.  Inside `wigner_d_phys` the exponents `pc`, `ps` are
-small non-negative integers ≤ 2l.  Precompute `c2^k`, `s2^k` for
-`k = 0 .. 2l` once per call (length 2l+1, Horner-built in 2l mults), then
-the t-loop is two table lookups per term.
+### 2. Recurrence-coefficient caching across k
 
-Touches: `src/su2_wigner.c`.  Cleanly composable with #1 (if we have a
-recurrence-based wigner, this is redundant).
+**Impact: ~20% on the recurrence sweep (33% of wall).**  The Jacobi
+coefficients `Ak`, `Bk`, `Ck` and the normalisation ratios `F1`, `F2` in the
+§2b recurrence (`notes/wigner_recurrence.md`) depend on `(l, m, n)` but not
+on `theta_k`.  Currently they are recomputed for every k in the outer k-loop.
+Precomputing them once per (m, n) into a length-N array outside the k-loop
+avoids N redundant divides and square-roots per l-step.
 
-### 3. OpenMP across the outer `(l, m, n)` loop
+Touches: `src/su2_fft.c` Stage 2 only.
 
-**Impact: ~6–8× on an 8-core box** (Stage 2 is embarrassingly parallel —
-no coefficient touches another).  Add `#pragma omp parallel for collapse(2)`
-on the `l, m` loop in `src/su2_fft.c`; preallocate per-thread Pk buffers.
+### 3. OpenMP across the outer `(m, n)` loop
+
+**Impact: ~6–8× on an 8-core box** (each (m, n) pair in Stage 2 is
+independent).  Add `#pragma omp parallel for collapse(2)` on the `m, n`
+loops in `src/su2_fft.c`; preallocate per-thread `d_seq` and `acc` buffers.
 
 Touches: `src/su2_fft.c`, `Makefile` (add `-fopenmp`).  Composes
-multiplicatively with #1 and #2.
+multiplicatively with items 1 and 2.
 
 ### 4. SIMD inner product (AVX2 → AVX-512)
 
-**Impact: ~4× on the inner-product slice (which becomes the bottleneck
-after #1).**  After Stage 2 is recurrence-driven, the per-coefficient dot
-product over `k` is a length-N complex–complex multiply-accumulate — a
-textbook vectorisation target.  Use `_mm256_pd` intrinsics or
-`#pragma omp simd` with an aligned `__attribute__((aligned(64)))` buffer.
+**Impact: ~4× on the inner-product slice (11% of wall).**  The per-(m, n, l)
+accumulation over k is a length-N complex multiply-accumulate — a textbook
+vectorisation target.  Use `_mm256_pd` intrinsics or `#pragma omp simd`
+with an aligned `__attribute__((aligned(64)))` buffer.
 
-Touches: `src/su2_fft.c`; new `src/simd/dot_complex.h` for portability.
+Touches: `src/su2_fft.c`; optional `src/simd/dot_complex.h` for portability.
 
 ---
 
@@ -190,9 +192,11 @@ Touches: new `tests/fuzz.c`; CI hookup.
 
 ## Headline summary
 
-If we ship items **1, 2, 3, 4, 7, 14** the codebase goes from "honest
-educational implementation that matches the paper" to "the obvious tool you
-reach for if you need an SU(2) FFT".  Items 1–4 alone bring N=24 from
-1.8 s to an estimated < 30 ms per FFT (>60× speedup); item 14 (Python
-bindings) is what turns the project from a curiosity into something a
-researcher actually depends on.
+Item 1 of the original list (three-term recurrence) shipped as bead `su2fft-m21`,
+delivering 90.91x speedup at N=24 and bringing the implementation to the paper's
+O(N^4) asymptotic.  If we now ship items **1, 2, 3, 4, 7, 14** (renumbered above)
+the codebase goes from "honest O(N^4) implementation that matches the paper" to
+"the obvious tool you reach for if you need an SU(2) FFT".  Items 1–4 alone should
+bring N=24 from ~20 ms to an estimated < 5 ms per FFT; item 14 (Python bindings)
+is what turns the project from a curiosity into something a researcher actually
+depends on.

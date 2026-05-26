@@ -20,6 +20,7 @@
 #include "su2.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 /* Legendre P_l(x) via Bonnet's recurrence -- independent reference. */
 static double legendre_P(int l, double x)
@@ -84,6 +85,52 @@ static void test_wigner_unitarity_columns(void)
     free(theta);
 }
 
+static void test_wigner_d_seq_matches_phys(void)
+{
+    /* The sequence helper must produce exactly the same d^l_{n,m}(theta)
+     * values as direct evaluation via su2_wigner_d (modulo the i^{m-n} phase).
+     * We test on a grid of (l, m, n, theta) covering the regimes used by
+     * su2_fft Stage 2.
+     */
+    int N = 12;
+    int l_max = N - 1;
+    double *theta = su2_grid_theta(N);
+    double tol = 1e-12;
+
+    double d_seq[16];  /* buffer for sequence values; l_max - l_min + 1 <= N */
+
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > l_max) continue;
+            for (int k = 1; k < N - 1; ++k) {       /* skip exact endpoints */
+                su2_wigner_d_seq(l_min, l_max, n, m, theta[k], d_seq);
+                for (int l = l_min; l <= l_max; ++l) {
+                    /* Pull out the i^{m-n} phase: P / i^{m-n} = d (real). */
+                    double _Complex P = su2_wigner_d(l, n, m, theta[k]);
+                    /* d = P * i^{n-m} (= P / i^{m-n}).  Since d is real and
+                     * i^{n-m} has unit modulus, just take real part. */
+                    /* Equivalent: P / pow_i(m-n).  Use multiplication by
+                     * conj(pow_i(m-n)) = pow_i(n-m). */
+                    int r = ((n - m) % 4 + 4) % 4;
+                    double _Complex phase_inv;
+                    switch (r) {
+                        case 0: phase_inv =  1.0 + 0.0*I; break;
+                        case 1: phase_inv =  0.0 + 1.0*I; break;
+                        case 2: phase_inv = -1.0 + 0.0*I; break;
+                        default: phase_inv = 0.0 - 1.0*I; break;
+                    }
+                    double _Complex want_complex = P * phase_inv;
+                    /* d is real, so imag(want_complex) should be ~0. */
+                    double want = creal(want_complex);
+                    ASSERT_NEAR(d_seq[l - l_min], want, tol);
+                }
+            }
+        }
+    }
+    free(theta);
+}
+
 static void test_wigner_specific_complex_value(void)
 {
     /* Computed by hand from paper line 537:
@@ -98,6 +145,7 @@ int main(void)
     RUN(test_wigner_legendre_special);
     RUN(test_wigner_identity_at_zero);
     RUN(test_wigner_unitarity_columns);
+    RUN(test_wigner_d_seq_matches_phys);
     RUN(test_wigner_specific_complex_value);
     TEST_REPORT_AND_EXIT();
 }

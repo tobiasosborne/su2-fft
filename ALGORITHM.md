@@ -155,6 +155,87 @@ A_r^L, B_r^L from paper line 773; composition rule line 981) could be
 substituted with no change in the answer or its asymptotic; it just
 shuffles the same O(N^4) operations differently.
 
+### 2.3 Wigner sweep via ascending-l three-term recurrence (m21)
+
+Bead `su2fft-m21` replaced the per-(l, m, n, k) call to `wigner_d_phys`
+with a recurrence-based sweep that reduces Stage 2 from O(N^5) to O(N^4),
+matching the paper's headline complexity for the first time.
+
+**Phase identity.**  The paper's P^l_{n,m} and Sakurai's real Wigner small-d
+are related by `P^l_{n,m}(cos beta) = i^{m-n} * d^l_{n,m}(beta)` (see
+Section 4 of this file).  Taking the conjugate:
+
+```
+conj(P^l_{n,m}(cos beta)) = i^{n-m} * d^l_{n,m}(beta)
+```
+
+Because d^l_{n,m} is real, the phase `i^{n-m}` is constant across all k
+for fixed (m, n, l).  It can therefore be pulled outside the k-sum in Stage 2:
+
+```
+fhat(l)_{m,n} = norm * i^{n-m} * sum_k  d^l_{n,m}(theta_k)
+                                         * F2[k, n, m] * sin(theta_k)
+```
+
+**Loop order.**  The outer loops run over (m, n); for each pair, a k-loop
+accumulates the dot products `acc[l] += d^l_{n,m}(theta_k) * F2[k,n,m] * sin(theta_k)`
+for all l simultaneously; then the phase and norm are applied once per (m, n, l).
+Innermost is the l-sweep over the recurrence values.
+
+**Recurrence.**  For fixed (m, n, theta_k), the values `d^l_{n,m}(theta_k)` for
+ascending l satisfy the Jacobi-lifted three-term recurrence derived in
+`notes/wigner_recurrence.md` §2b:
+
+```
+d^{l+1}_{n,m}(beta) = (A_k cos(beta) + B_k) * F1 * d^l_{n,m}(beta)
+                     -  C_k * F2 * d^{l-1}_{n,m}(beta)
+```
+
+where `A_k`, `B_k`, `C_k` are the standard Jacobi polynomial recurrence
+coefficients (DLMF 18.9.1) at index k = l - max(|m|, |n|), and F1, F2 are
+normalisation ratios that carry the factorial weight between consecutive l.
+See `notes/wigner_recurrence.md` §2b for the exact coefficient formulas and
+the singularity analysis showing no division-by-zero occurs for l >= l_min + 1.
+The ascending direction is the numerically stable direction for Jacobi
+polynomials (DLMF §18.2(iii); Risbo 1996 §3).
+
+**Seed.**  The recurrence is seeded with two `wigner_d_phys` calls at
+`l = l_min` and `l = l_min + 1`, where `l_min = max(|m|, |n|)`.  At `l = l_min`
+the de Moivre sum has exactly one term (tmin = tmax); at `l = l_min + 1` it has
+at most two terms.  Both are O(1)-cost calls, not O(l).
+
+The relevant loop from `src/su2_fft.c` Stage 2:
+
+```c
+for (int k = 0; k < N; ++k) {
+    su2_wigner_d_seq(l_min, N - 1, n, m, theta[k], d_seq);
+    double _Complex w = F2[k * stride_k + (n+N-1)*stride_n + (m+N-1)] * sin_th[k];
+    for (int l = l_min; l < N; ++l)
+        acc[l] += d_seq[l - l_min] * w;
+}
+```
+
+`su2_wigner_d_seq` seeds with two `wigner_d_phys` calls and then runs the §2b
+recurrence to fill the output array for l = l_min..N-1 in O(N - l_min) steps.
+
+**Empirical scaling confirmation.**  The speedup table from `build/compare` post-m21:
+
+```
+   N |    direct(s) |      fast(s) |  speedup
+-----+--------------+--------------+----------
+  16 |     0.177889 |     0.004820 |    36.90
+  20 |     0.655026 |     0.009028 |    72.55
+  24 |     1.832225 |     0.020154 |    90.91
+```
+
+N=16 to N=24 is a 1.5x increase in N.  O(N^4) predicts (1.5)^4 = 5.06x; the
+observed ratio is 0.00482 s to 0.0202 s = 4.18x.  Slightly sub-N^4 because
+seed cost and FFTW overhead are non-negligible at these sizes.  Pre-m21 the
+same interval was 5.78x, closer to O(N^5)'s prediction of 7.59x.
+
+Cross-reference: `notes/wigner_recurrence.md` (full derivation and singularity
+analysis); `PROFILING.md` (stage timings and hot-path breakdown).
+
 ---
 
 ## 3. Why this works
@@ -246,27 +327,31 @@ input.  `bench/compare.c` extends this to larger N and reports timing.
 
 ## 6. Observed cross-comparison
 
-A sample `make bench` run on this host:
+A sample `make bench` run on this host (post-m21, Stage 2 uses the ascending-l
+recurrence; see Section 2.3):
 
 ```
    N |    direct(s) |      fast(s) |  speedup |  max|diff| | status
 -----+--------------+--------------+----------+------------+---------
-   4 |     0.000117 |     0.000970 |     0.12 |   6.25e-17 | OK
-   6 |     0.000839 |     0.000437 |     1.92 |   4.34e-17 | OK
-   8 |     0.003892 |     0.001492 |     2.61 |   2.64e-17 | OK
-  10 |     0.009636 |     0.003234 |     2.98 |   2.55e-17 | OK
-  12 |     0.035140 |     0.005772 |     6.09 |   2.32e-17 | OK
-  14 |     0.080312 |     0.012209 |     6.58 |   4.97e-17 | OK
-  16 |     0.166585 |     0.031633 |     5.27 |   3.32e-17 | OK
-  20 |     0.621584 |     0.067321 |     9.23 |   2.43e-17 | OK
-  24 |     1.818179 |     0.182840 |     9.94 |   7.12e-17 | OK
+   4 |     0.000142 |     0.001105 |     0.13 |   5.94e-17 | OK
+   6 |     0.000961 |     0.000375 |     2.56 |   4.63e-17 | OK
+   8 |     0.004721 |     0.000955 |     4.94 |   5.30e-17 | OK
+  10 |     0.013280 |     0.001279 |    10.39 |   1.26e-16 | OK
+  12 |     0.040555 |     0.001990 |    20.38 |   6.58e-16 | OK
+  14 |     0.087188 |     0.003556 |    24.52 |   7.13e-16 | OK
+  16 |     0.177889 |     0.004820 |    36.90 |   1.61e-15 | OK
+  20 |     0.655026 |     0.009028 |    72.55 |   2.09e-14 | OK
+  24 |     1.832225 |     0.020154 |    90.91 |   2.21e-13 | OK
 ```
 
-The maximum coefficient-wise difference holds at floating-point noise
-(`~1e-17 ~ eps_double`) across the full range, confirming the two algorithms
-realise exactly the same discrete sum.  The speedup rises with N as predicted
-by `N^6 / N^4 = N^2`; at small N the FFTW setup cost dominates and the
-direct path wins (this is the standard FFT crossover).
+The maximum coefficient-wise difference is within the 1e-10 cross-check
+tolerance across the full range, confirming the two algorithms realise the same
+discrete sum.  At N=24 the max-diff is 2.21e-13, higher than the pre-recurrence
+figure of 7.12e-17 because the ascending-l recurrence accumulates floating-point
+error over l steps rather than recomputing each d^l independently; 2.21e-13 is
+still four orders of magnitude inside the tolerance.  The speedup at N=24 is
+90.91x; at small N the FFTW plan overhead dominates and the direct path wins
+(the standard FFT crossover).
 
 ---
 

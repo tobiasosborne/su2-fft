@@ -63,6 +63,30 @@ double *su2_grid_psi(int N);
  */
 double _Complex su2_wigner_d(int l, int n, int m, double theta);
 
+/* ------- Wigner small-d sequence via three-term recurrence -------
+ *
+ * Fills out_d[0..l_max-l_min] with the REAL Sakurai-convention Wigner
+ * small-d values d^l_{n,m}(theta) for l = l_min .. l_max, using the
+ * forward (ascending-l) three-term recurrence derived from the Jacobi
+ * polynomial recurrence (DLMF 18.9.1/18.9.2 lifted to d^l via the
+ * normalisation R(l)).  See notes/wigner_recurrence.md.
+ *
+ * Convention reminder: the paper's P^l_{n,m} = i^{m-n} * d^l_{n,m};
+ * this routine returns the real d.  The caller applies the phase.
+ *
+ * Requirements:
+ *   - l_min >= max(|n|, |m|).  Below max(|n|,|m|) the value is zero by
+ *     definition; the caller should not request those.
+ *   - l_max >= l_min.
+ *   - out_d points to a buffer of length (l_max - l_min + 1) doubles.
+ *
+ * Cost: O(l_max - l_min) flops.  Seeds two values via wigner_d_phys
+ * (each O(1) terms in the de Moivre sum at l = l_min, l_min+1) then
+ * O(1) per recurrence step.
+ */
+void su2_wigner_d_seq(int l_min, int l_max, int n, int m, double theta,
+                      double *out_d);
+
 /* ------- Direct (reference) Fourier transform on SU(2) -------
  * Cost: O(N^6).  Used as ground truth for the fast algorithm.
  *
