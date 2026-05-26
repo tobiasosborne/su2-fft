@@ -79,18 +79,21 @@ Touches: `src/su2_fft.c`; optional `src/simd/dot_complex.h` for portability.
 
 ## Tier 2 — extend the algorithm's reach
 
-### 5. Half-integer `l` support
+### ~~5. Half-integer `l` Wigner-d evaluation~~ — DONE Tier 1 (n8e); full FFT = su2fft-u9q (P2)
 
-The paper covers `l ∈ ½ℕ₀`; we currently restrict to integer `l`.  Adding
-half-integer support means: (a) using `tgamma(l + 0.5 + 1)` instead of
-`fact()` where l is half-integer, (b) running the FFT phi/psi DFTs at a
-**different** angular grid (`exp(±i n φ)` for half-integer n is not periodic
-on `2π`), and (c) doubling the (l, m, n) iteration range.  Lets us cover the
-spin-½, spin-3/2, spin-5/2 representations directly — essential for fermionic
-applications and for the quantum-information uses the paper cites.
+Bead `su2fft-n8e` Tier 1 shipped `su2_wigner_d_half` in `src/su2_wigner.c`
+(+85 LOC).  The de Moivre sum uses `tgamma` instead of the `fact()` table;
+args are `2l/2n/2m` (always integers) to avoid FP comparison issues.  38/38
+C tests, 714/714 Julia tests.  Cross-check vs integer-l: max delta 2.22e-16
+(one ULP).  Spin-1/2 closed forms verified at 1e-12.
 
-Touches: `include/su2.h` (layout), `src/su2_wigner.c` (factorials → Gamma),
-`src/su2_fft.c` (grid + iteration).
+Tier 2 (bead `su2fft-u9q`, P2) covers the full forward+inverse FFT for
+half-integer `l`.  Required work: (a) 4pi-periodic phi/psi grid
+(`exp(±i n phi)` for half-integer n is not periodic on 2pi), (b) Gamma in
+the Jacobi recurrence coefficients, (c) new FFTW plans for the extended grid,
+(d) iteration range expansion.  Estimated ~500-1000 LOC.  Unblocks
+`su2fft-erv` (SO(3) FFT) and `su2fft-5fb` (spherical-harmonic FFT); those
+two beads are blocked on `u9q`, not on `n8e`.
 
 ### 6. Real-input symmetry shortcut
 
@@ -189,10 +192,10 @@ Touches: new `src/su2_convolve.c`, depends on #7 (DONE, 3lx) + #8b (su2fft-0t1, 
 ### 11. SO(3) FFT via the Z₂ quotient
 
 SU(2) → SO(3) is a double cover with kernel ±I.  Functions on SO(3)
-correspond to **integer-l** SU(2) coefficients.  After #5, a `su2_fft_so3`
-that simply zeroes out the half-integer-l output is one CLI flag — and
-catches a much larger user base (computer graphics, robotics, molecular
-dynamics, all do SO(3) FT).
+correspond to **integer-l** SU(2) coefficients.  After `su2fft-u9q` (full
+half-integer FFT), a `su2_fft_so3` that simply zeroes out the half-integer-l
+output is one CLI flag — and catches a much larger user base (computer
+graphics, robotics, molecular dynamics, all do SO(3) FT).  Blocked on `u9q`.
 
 Touches: thin wrapper in `src/su2_fft_so3.c`.
 
@@ -211,9 +214,10 @@ Touches: new `src/qsp/` directory; non-trivial (~1 week) but standalone.
 
 Project SU(2) coefficients onto fixed-`m=0` subspace → harmonic transform
 on the sphere.  Provides a single-binary alternative to s2kit/SHTns for the
-common case.  Easy after #5 + #7.
+common case.  Requires full half-integer FFT (`su2fft-u9q`) and inverse FFT
+(`3lx`, already done).  Blocked on `u9q`.
 
-Touches: thin wrapper, depends on #5 and #7.
+Touches: thin wrapper, depends on `su2fft-u9q` and bead `3lx` (done).
 
 ---
 
@@ -285,6 +289,11 @@ A phi/psi aliasing floor remains: single-coefficient roundtrip error at high
 
 The top priority is now **`su2fft-0t1`** (phi/psi grid resolution, item 8b):
 it is the remaining barrier to exact spectrum roundtrip and gates practical use
-of application beads `d7v`, `31x`, `erv`, `5fb`.  After `0t1`, items **1b, 2,
-3, 4, 15** (trig-sharing, recurrence-coefficient caching, OpenMP, SIMD, Python
-bindings) complete the performance picture.
+of application beads `d7v` and `31x`.  After `0t1`, items **1b, 2, 3, 4, 15**
+(trig-sharing, recurrence-coefficient caching, OpenMP, SIMD, Python bindings)
+complete the performance picture.
+
+Bead `su2fft-n8e` Tier 1 shipped half-integer Wigner-d evaluation (+85 LOC C,
++82 LOC test, +25 LOC Julia binding, +47 LOC Julia tests).  38/38 C tests,
+714/714 Julia tests.  Full half-integer FFT is `su2fft-u9q` (P2, ~500-1000 LOC
+estimated).  `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on `n8e`.

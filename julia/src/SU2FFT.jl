@@ -37,6 +37,7 @@ const _SYM_FFT           = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FFT_INV       = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FT_DIRECT     = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_WIGNER_D      = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_WIGNER_D_HALF = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_TOTAL_COEFFS  = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_COEFF_OFFSET  = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FFT_GL          = Ref{Ptr{Cvoid}}(C_NULL)
@@ -62,6 +63,7 @@ function __init__()
     _SYM_FFT_INV[]      = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_inv)
     _SYM_FT_DIRECT[]    = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_ft_direct)
     _SYM_WIGNER_D[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_wigner_d)
+    _SYM_WIGNER_D_HALF[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_wigner_d_half)
     _SYM_TOTAL_COEFFS[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_total_coeffs)
     _SYM_COEFF_OFFSET[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_coeff_offset)
     _SYM_FFT_GL[]       = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_gl)
@@ -69,8 +71,8 @@ function __init__()
     _SYM_GL_NODES[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_gl_nodes_weights)
 end
 
-export fft, ft_direct, fft_inv, fft_gl, fft_inv_gl, gl_nodes_weights, wigner_d, total_coeffs, coeff_offset,
-       fhat_at, fhat_block, libsu2_path
+export fft, ft_direct, fft_inv, fft_gl, fft_inv_gl, gl_nodes_weights, wigner_d, wigner_d_half,
+       total_coeffs, coeff_offset, fhat_at, fhat_block, libsu2_path
 
 # ----- Coefficient layout helpers (ccall to C) -----
 
@@ -107,6 +109,27 @@ function wigner_d(l::Integer, n::Integer, m::Integer, theta::Real)::ComplexF64
     ccall(_SYM_WIGNER_D[], ComplexF64,
           (Cint, Cint, Cint, Cdouble),
           l, n, m, theta)
+end
+
+"""
+    wigner_d_half(two_l, two_n, two_m, theta) -> ComplexF64
+
+Half-integer-compatible matrix coefficient `P^l_{n,m}(cos theta)` with
+`(l, n, m)` encoded as `(two_l, two_n, two_m) / 2` (integers). Supports
+half-integer spin (`two_l` odd). Wraps `su2_wigner_d_half`.
+
+Constraints: `two_l >= 0`, `|two_n| <= two_l`, `|two_m| <= two_l`, and
+all three must share parity (all even = integer l; all odd = half-integer l).
+For integer l (`two_l` even) the value matches `wigner_d(l, n, m, theta)`.
+
+This is Tier 1 of bead `su2fft-n8e`: Wigner-d evaluation only. The
+half-integer FFT itself (4pi-period phi/psi grid) is a follow-up bead.
+See `notes/half_integer.md`.
+"""
+function wigner_d_half(two_l::Integer, two_n::Integer, two_m::Integer, theta::Real)::ComplexF64
+    ccall(_SYM_WIGNER_D_HALF[], ComplexF64,
+          (Cint, Cint, Cint, Cdouble),
+          two_l, two_n, two_m, theta)
 end
 
 # ----- Transforms -----

@@ -334,8 +334,9 @@ to better than O(1) relative error at all coefficients must wait on bead
 ### 3.4 Test coverage (`tests/test_roundtrip.c`)
 
 Seven tests for the closed-grid path, all passing; plus six GL testsets added
-by bead `ega` (see §3.6).  The C suite is at 34 tests total (was 18 before
-`test_roundtrip`; grew to 25 with 3lx; to 34 with ega).
+by bead `ega` (see §3.6).  The C suite stood at 34 tests after `ega` (was 18
+before `test_roundtrip`; grew to 25 with 3lx; to 34 with ega); bead `n8e`
+Tier 1 added 4 more to reach the current 38 (see §5.1).
 
 | test                        | what it checks                            | residual     |
 |-----------------------------|-------------------------------------------|--------------|
@@ -633,7 +634,54 @@ one or two FFT levels.
    identifies as the cost-minimal one (line 1484).  Same asymptotic, simpler
    code, identical numerics.
 
-3. **Integer-l only.**  The paper covers `l in (1/2) N_0` (including half-
-   integer).  We restrict to integer `l`.  Half-integer support would require
-   threading `l - n, l - m` consistency through every factorial; the
-   algorithmic structure is unchanged.
+3. **Integer-l for the full FFT; half-integer Wigner-d evaluation in
+   `su2_wigner_d_half` (bead `su2fft-n8e` Tier 1).**  The paper covers
+   `l in (1/2) N_0` (including half-integer).  The FFT restricts to integer
+   `l`; half-integer FFT is bead `su2fft-u9q` (Tier 2).  See §5.1 below for
+   the evaluation-only path that shipped in Tier 1.
+
+### 5.1 Half-integer Wigner-d evaluation (bead `su2fft-n8e` Tier 1)
+
+`src/su2_wigner.c` gained two functions:
+
+- `wigner_d_phys_half` (internal): the de Moivre sum with `tgamma` replacing
+  the `fact()` table, accepting `two_l / 2`, `two_n / 2`, `two_m / 2` as
+  `int two_l`, `int two_n`, `int two_m` (always integers).  The integer
+  encoding avoids floating-point comparison issues for half-integer indices.
+- `su2_wigner_d_half(int two_l, int two_n, int two_m, double theta)` (public
+  wrapper declared in `include/su2.h`): evaluates `d^{two_l/2}_{two_n/2,
+  two_m/2}(theta)` via the de Moivre sum and multiplies by the paper's
+  `i^{m-n}` phase to give `P^l_{n,m}`.
+
+**Extension via Gamma.**  The de Moivre sum uses factorial ratios
+`sqrt((l+n)!(l-n)!(l+m)!(l-m)!) / [(l+m-t)! t! (n-m+t)! (l-n-t)!]`.  For
+half-integer `l`, `n`, `m` all half-integers the arguments are always
+non-negative integers (since `l+n`, `l-n`, etc. are integers), so
+`tgamma(k + 1) = k!` applies exactly.  The parity constraint is unchanged:
+`two_l - two_n` and `two_l - two_m` must both be even (equivalently, `two_n`
+and `two_m` must have the same parity as `two_l`).
+
+**Spin-1/2 closed forms verified at 1e-12:**
+- `P^{1/2}_{1/2, 1/2}(beta) = cos(beta/2)`
+- `P^{1/2}_{-1/2, -1/2}(beta) = cos(beta/2)`
+- `P^{1/2}_{1/2, -1/2}(beta) = +i sin(beta/2)`
+- `P^{1/2}_{-1/2, 1/2}(beta) = +i sin(beta/2)`
+
+**Cross-check vs integer-l.**  At integer `l in [0, 6]`, `su2_wigner_d_half`
+(calling `tgamma`) agrees with `su2_wigner_d` (using the `fact()` table) to a
+maximum delta of 2.22e-16 (one ULP).  `tgamma` agrees with the precomputed
+double factorial table at machine precision.
+
+**Test coverage.**  `tests/test_wigner.c` gained 82 LOC and 4 new tests:
+spin-1/2 closed-form check (1e-12), at-identity check, unitarity for spin-1/2,
+and a cross-check vs integer-l `su2_wigner_d`.  Julia: `julia/src/SU2FFT.jl`
+gained a `wigner_d_half(two_l, two_n, two_m, theta)` ccall binding (+25 LOC);
+`julia/test/runtests.jl` gained 4 testsets (+47 LOC).  Total after Tier 1:
+38/38 C tests, 714/714 Julia tests (was 274/274 before this bead).
+
+**Scope.**  Tier 1 (this bead) is evaluation only — useful as a standalone
+routine for external code needing spin-1/2 matrix elements.  Tier 2 (bead
+`su2fft-u9q`) covers the full forward+inverse FFT for half-integer `l`, which
+requires a 4pi-periodic phi/psi grid, Gamma in the Jacobi recurrence, and new
+FFTW plans (~500-1000 LOC estimated).  Beads `su2fft-erv` and `su2fft-5fb`
+remain blocked on `u9q`, not on this bead.

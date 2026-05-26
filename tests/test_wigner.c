@@ -140,6 +140,89 @@ static void test_wigner_specific_complex_value(void)
     ASSERT_CNEAR(got, want, 1e-12);
 }
 
+/* ------- Half-integer-compatible Wigner-d (bead su2fft-n8e, Tier 1) -------
+ *
+ * The half-integer routine encodes (l, n, m) as (2l, 2n, 2m) integers so
+ * that l = 1/2, 3/2, ... is representable without FP comparison.  See
+ * notes/half_integer.md.
+ */
+
+static void test_wigner_half_spin_half_at_identity(void)
+{
+    /* d^{1/2}(theta=0) = identity 2x2 matrix.  Indices in 2x-encoded form:
+     * 2n in {-1, +1} corresponds to physical n in {-1/2, +1/2}. */
+    int two_l = 1;
+    double _Complex d00 = su2_wigner_d_half(two_l, -1, -1, 0.0);
+    double _Complex d01 = su2_wigner_d_half(two_l, -1,  1, 0.0);
+    double _Complex d10 = su2_wigner_d_half(two_l,  1, -1, 0.0);
+    double _Complex d11 = su2_wigner_d_half(two_l,  1,  1, 0.0);
+    ASSERT_CNEAR(d00, 1.0 + 0.0*I, 1e-13);
+    ASSERT_CNEAR(d01, 0.0 + 0.0*I, 1e-13);
+    ASSERT_CNEAR(d10, 0.0 + 0.0*I, 1e-13);
+    ASSERT_CNEAR(d11, 1.0 + 0.0*I, 1e-13);
+}
+
+static void test_wigner_half_spin_half_closed_form(void)
+{
+    /* Sakurai d^{1/2}:
+     *   d^{1/2}_{1/2, 1/2}(theta)   =  cos(theta/2)
+     *   d^{1/2}_{1/2,-1/2}(theta)   = -sin(theta/2)
+     *   d^{1/2}_{-1/2,1/2}(theta)   =  sin(theta/2)
+     *   d^{1/2}_{-1/2,-1/2}(theta)  =  cos(theta/2)
+     * After the paper's i^{m-n} phase (su2_wigner_d_half returns P, not d):
+     *   P^{1/2}_{1/2, 1/2}   = i^0  *  cos(t/2)         =  cos(t/2)
+     *   P^{1/2}_{1/2,-1/2}   = i^-1 * (-sin(t/2))       = +i sin(t/2)
+     *   P^{1/2}_{-1/2,1/2}   = i^+1 * ( sin(t/2))       = +i sin(t/2)
+     *   P^{1/2}_{-1/2,-1/2}  = i^0  *  cos(t/2)         =  cos(t/2)
+     */
+    double theta = 0.7;
+    int two_l = 1;
+    double c = cos(theta * 0.5);
+    double s = sin(theta * 0.5);
+    ASSERT_CNEAR(su2_wigner_d_half(two_l,  1,  1, theta),  c + 0.0*I, 1e-12);
+    ASSERT_CNEAR(su2_wigner_d_half(two_l,  1, -1, theta),  0.0 + s*I, 1e-12);
+    ASSERT_CNEAR(su2_wigner_d_half(two_l, -1,  1, theta),  0.0 + s*I, 1e-12);
+    ASSERT_CNEAR(su2_wigner_d_half(two_l, -1, -1, theta),  c + 0.0*I, 1e-12);
+}
+
+static void test_wigner_half_matches_integer(void)
+{
+    /* For two_l even (integer l), su2_wigner_d_half must equal su2_wigner_d
+     * up to tgamma-vs-factorial-table FP noise.  CLAUDE.md rule 7:
+     * cross-checks > unit tests. */
+    int N = 5;
+    double *theta = su2_grid_theta(N);
+    for (int l = 0; l <= 3; ++l) {
+        for (int n = -l; n <= l; ++n) {
+            for (int m = -l; m <= l; ++m) {
+                for (int k = 0; k < N; ++k) {
+                    double _Complex got  = su2_wigner_d_half(2*l, 2*n, 2*m, theta[k]);
+                    double _Complex want = su2_wigner_d(l, n, m, theta[k]);
+                    ASSERT_CNEAR(got, want, 1e-11);
+                }
+            }
+        }
+    }
+    free(theta);
+}
+
+static void test_wigner_half_unitarity(void)
+{
+    /* Column unitarity for spin-1/2: sum_n |P^{1/2}_{n, m}|^2 = 1 for any
+     * (m, theta).  The sum runs over 2n in {-1, +1}. */
+    int two_l = 1;
+    for (double theta = 0.1; theta < 3.0; theta += 0.5) {
+        for (int two_m = -1; two_m <= 1; two_m += 2) {
+            double s = 0.0;
+            for (int two_n = -1; two_n <= 1; two_n += 2) {
+                double _Complex v = su2_wigner_d_half(two_l, two_n, two_m, theta);
+                s += creal(v)*creal(v) + cimag(v)*cimag(v);
+            }
+            ASSERT_NEAR(s, 1.0, 1e-12);
+        }
+    }
+}
+
 int main(void)
 {
     RUN(test_wigner_legendre_special);
@@ -147,5 +230,9 @@ int main(void)
     RUN(test_wigner_unitarity_columns);
     RUN(test_wigner_d_seq_matches_phys);
     RUN(test_wigner_specific_complex_value);
+    RUN(test_wigner_half_spin_half_at_identity);
+    RUN(test_wigner_half_spin_half_closed_form);
+    RUN(test_wigner_half_matches_integer);
+    RUN(test_wigner_half_unitarity);
     TEST_REPORT_AND_EXIT();
 }

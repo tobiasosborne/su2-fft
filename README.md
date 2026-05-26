@@ -142,7 +142,7 @@ A thin Julia wrapper lives at `julia/`. The package exposes `su2_fft`,
 using Pkg
 Pkg.develop(path="/path/to/su2-fft/julia")
 Pkg.build("SU2FFT")     # builds libsu2.so via make
-Pkg.test("SU2FFT")      # 274 tests; gold-standard fft ≈ ft_direct at 1e-10
+Pkg.test("SU2FFT")      # 714 tests; gold-standard fft ≈ ft_direct at 1e-10
 
 using SU2FFT
 N = 8
@@ -190,6 +190,20 @@ C storage `f[j1*N*N + k*N + j2]` (row-major) matches Julia's column-major
 No permutation needed for ccall. Coefficients are returned as a flat
 `Vector{ComplexF64}` of length `total_coeffs(N) = sum_{l=0..N-1}(2l+1)^2`;
 accessors handle the (l, m, n) offset arithmetic.
+
+### Half-integer Wigner-d (bead `su2fft-n8e` Tier 1)
+
+`su2_wigner_d_half(int two_l, int two_n, int two_m, double theta)` evaluates
+the paper's `P^l_{n,m}(cos theta)` for half-integer `l`, `n`, `m`.  Arguments
+are `2l`, `2n`, `2m` (always integers) to avoid floating-point comparison
+issues.  The implementation uses the same de Moivre sum as `su2_wigner_d` with
+`tgamma` replacing the `fact()` table.  Spin-1/2 closed forms verified at
+1e-12; cross-check against integer-l `su2_wigner_d` gives max delta 2.22e-16
+(one ULP) at `l in [0, 6]`.  A Julia binding `SU2FFT.wigner_d_half` is included.
+
+This is Tier 1 (evaluation only).  Full half-integer FFT (phi/psi grid on 4pi,
+Gamma in the Jacobi recurrence, new FFTW plans) is bead `su2fft-u9q` (Tier 2).
+Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on this bead.
 
 ### Status
 

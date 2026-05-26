@@ -271,6 +271,57 @@ using Random
         end
     end
 
+    @testset "wigner_d_half (bead n8e Tier 1)" begin
+        # Spin-1/2 closed forms (Sakurai d^{1/2}, paper i^{m-n} phase applied).
+        # See notes/half_integer.md §1 and tests/test_wigner.c.
+        @testset "spin-1/2 at identity" begin
+            two_l = 1
+            @test SU2FFT.wigner_d_half(two_l, -1, -1, 0.0) ≈ 1.0 + 0.0im atol=1e-13
+            @test SU2FFT.wigner_d_half(two_l, -1,  1, 0.0) ≈ 0.0 + 0.0im atol=1e-13
+            @test SU2FFT.wigner_d_half(two_l,  1, -1, 0.0) ≈ 0.0 + 0.0im atol=1e-13
+            @test SU2FFT.wigner_d_half(two_l,  1,  1, 0.0) ≈ 1.0 + 0.0im atol=1e-13
+        end
+
+        @testset "spin-1/2 closed form" begin
+            # P^{1/2}_{ 1/2,  1/2}(t) =  cos(t/2)
+            # P^{1/2}_{ 1/2, -1/2}(t) = +i sin(t/2)
+            # P^{1/2}_{-1/2,  1/2}(t) = +i sin(t/2)
+            # P^{1/2}_{-1/2, -1/2}(t) =  cos(t/2)
+            theta = 0.7
+            two_l = 1
+            c = cos(theta * 0.5)
+            s = sin(theta * 0.5)
+            @test SU2FFT.wigner_d_half(two_l,  1,  1, theta) ≈ c + 0.0im atol=1e-12
+            @test SU2FFT.wigner_d_half(two_l,  1, -1, theta) ≈ 0.0 + s*im atol=1e-12
+            @test SU2FFT.wigner_d_half(two_l, -1,  1, theta) ≈ 0.0 + s*im atol=1e-12
+            @test SU2FFT.wigner_d_half(two_l, -1, -1, theta) ≈ c + 0.0im atol=1e-12
+        end
+
+        @testset "matches integer wigner_d when two_l even" begin
+            for l in 0:3, n in -l:l, m in -l:l
+                for theta in (0.0, 0.3, 1.1, 2.4, pi - 0.1)
+                    got  = SU2FFT.wigner_d_half(2l, 2n, 2m, theta)
+                    want = SU2FFT.wigner_d(l, n, m, theta)
+                    @test got ≈ want atol=1e-11
+                end
+            end
+        end
+
+        @testset "spin-1/2 column unitarity" begin
+            two_l = 1
+            for theta in 0.1:0.5:3.0
+                for two_m in (-1, 1)
+                    s = 0.0
+                    for two_n in (-1, 1)
+                        v = SU2FFT.wigner_d_half(two_l, two_n, two_m, theta)
+                        s += abs2(v)
+                    end
+                    @test s ≈ 1.0 atol=1e-12
+                end
+            end
+        end
+    end
+
     @testset "fhat_at accessor" begin
         N = 4
         Random.seed!(1)

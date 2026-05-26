@@ -23,7 +23,7 @@ https://arxiv.org/abs/2605.23923 — Delgado et al., May 2026.
 To verify nothing rotted before you start:
 
 ```sh
-make test                  # 34 tests, 7 binaries; takes ~5 s
+make test                  # 38 tests, 7 binaries; takes ~5 s
 make bench && build/compare  # benchmark sweep, ~3 s
 ```
 
@@ -74,6 +74,14 @@ aliasing floor remains (see §7 and `ALGORITHM.md §3.6`); bead `su2fft-0t1`
 tracks the fix.  The **top P1 priority is now `su2fft-0t1`** (phi/psi grid
 resolution), not `ega`.
 
+Bead `su2fft-n8e` Tier 1 (half-integer Wigner-d evaluation) shipped:
+`src/su2_wigner.c` gained `wigner_d_phys_half` and public wrapper
+`su2_wigner_d_half` (+85 LOC).  `tests/test_wigner.c` gained 4 tests (+82 LOC).
+C test count: 38/38 (was 34).  Julia: `SU2FFT.wigner_d_half` ccall binding
+(+25 LOC); 714/714 Julia tests pass (was 274).  Tier 2 (full half-integer FFT)
+is filed as bead `su2fft-u9q`.  Beads `su2fft-erv` and `su2fft-5fb` are blocked
+on `u9q`, not on `n8e`.
+
 ---
 
 ## 2. The conventions you will trip over
@@ -106,9 +114,14 @@ in source comments at point of use.
 5. **`acb_dft_prod` is forward DFT.**  Backward is `conj(forward(conj(.)))`.
    `src/su2_fft_arb.c` does exactly this; do not "simplify" it.
 
-6. **Integer-only l.**  Half-integer support is a substantial change
-   (bead `su2fft-n8e`) — factorials become Gammas, the phi/psi grids
-   become non-periodic on 2pi.  Three downstream beads block on it.
+6. **Integer-l for the full FFT; half-integer Wigner-d evaluation is in
+   `su2_wigner_d_half` (bead `n8e` Tier 1).**  The FFT path itself still
+   requires integer `l`.  `su2_wigner_d_half(int two_l, int two_n, int two_m,
+   double theta)` ships in `src/su2_wigner.c` / `include/su2.h` and evaluates
+   `d^{two_l/2}_{two_n/2, two_m/2}(theta)` via the de Moivre sum with `tgamma`
+   replacing `fact()`.  Full half-integer FFT (4pi-periodic phi/psi grid, Gamma
+   in the Jacobi recurrence, new FFTW plans) is bead `su2fft-u9q` (Tier 2).
+   Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on `n8e`.
 
 7. **The closed-grid (N/(N-1))^2 factor** is the systematic Riemann error
    that makes `test_ft_direct_constant` use the modified target `(N/(N-1))^2`
@@ -171,11 +184,13 @@ unblocks the application beads at useful precision.
 Both remain pure performance wins, independent of the grid change.
 
 **Application beads -- wait on `su2fft-0t1`.**  `su2fft-d7v` (convolution),
-`su2fft-31x` (QSP primitives), `su2fft-erv`, `su2fft-5fb` (spherical) are all
-formally unblocked by 3lx.  `ega` raised the precision floor (exact DC, exact
-low modes) but the worst-case spectrum roundtrip at high `|m|, |n|` is still O(1)
-error.  None of these achieves useful precision at all coefficients until `0t1`
-lands.  Pick up `su2fft-0t1` before starting any of these.
+`su2fft-31x` (QSP primitives), `su2fft-erv` (SO(3)), `su2fft-5fb` (spherical)
+are all formally unblocked by `3lx`.  `ega` raised the precision floor (exact DC,
+exact low modes) but the worst-case spectrum roundtrip at high `|m|, |n|` is
+still O(1) error.  None of these achieves useful precision at all coefficients
+until `0t1` lands.  Additionally, `erv` and `5fb` need full half-integer FFT
+(`su2fft-u9q`), not just Wigner-d evaluation (`n8e` Tier 1).  Pick up
+`su2fft-0t1` before starting any of these.
 
 **Trig-sharing bead `su2fft-xxb`** remains a sound ~10% seed optimisation
 (hoisting `cos(theta_k/2)` / `sin(theta_k/2)` out of the (m, n) loop at fixed
@@ -355,12 +370,27 @@ Concrete numbers:
 
 DC is fixed.  Phi/psi aliasing floor remains.  Bead `su2fft-0t1` is the follow-up.
 
-**`su2fft-n8e` (Half-integer l) — DONE when:**
-- A new test verifies the spin-1/2 representation explicitly:
-  for `f(g) = u_{00}(g) = e^{i(phi+psi)/2} cos(theta/2)` (the (0,0)
-  entry of the defining rep, paper line 503), `fhat(1/2)[0,0]` is the
-  expected scalar to ~1e-10.
-- Two downstream beads (`su2fft-erv`, `su2fft-5fb`) unblock.
+**`su2fft-n8e` Tier 1 (half-integer Wigner-d evaluation) — DONE.**
+- `src/su2_wigner.c`: `wigner_d_phys_half` (de Moivre sum with `tgamma`
+  instead of `fact()` table) and public wrapper `su2_wigner_d_half(int two_l,
+  int two_n, int two_m, double theta)`.  Args are 2l/2n/2m (always integers)
+  to avoid FP comparison issues.  +85 LOC.
+- `include/su2.h`: declaration added.
+- `tests/test_wigner.c`: 4 new tests (+82 LOC) — spin-1/2 closed-form
+  (cos(theta/2) and sin(theta/2) entries at 1e-12), at-identity check,
+  unitarity for spin-1/2, cross-check vs integer-l `su2_wigner_d`.
+- `julia/src/SU2FFT.jl`: `wigner_d_half(two_l, two_n, two_m, theta)` ccall
+  binding (+25 LOC).
+- `julia/test/runtests.jl`: 4 new testsets (+47 LOC).
+- C tests: 38/38 (was 34).  Julia tests: 714/714 (was 274; the integer-match
+  cross-check added ~440 individual assertions).
+- Cross-check delta `|su2_wigner_d_half(2l,2n,2m) - su2_wigner_d(l,n,m)|`
+  at integer `l in [0, 6]`: max 2.22e-16 (one ULP).
+- Spin-1/2 closed forms verified at 1e-12.
+
+Tier 2 (full half-integer FFT: 4pi-periodic phi/psi grid, Gamma in the Jacobi
+recurrence, new FFTW plans, ~500-1000 LOC) is filed as bead `su2fft-u9q`.
+Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on this bead.
 
 ---
 

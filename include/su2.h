@@ -78,6 +78,25 @@ void su2_gl_nodes_weights(int N, double *x, double *w);
  */
 double _Complex su2_wigner_d(int l, int n, int m, double theta);
 
+/* ------- Half-integer-compatible Wigner-d (bead su2fft-n8e, Tier 1) -------
+ *
+ * Same as su2_wigner_d but arguments are 2l, 2n, 2m (integers) so that
+ * half-integer l (2l odd) is representable without floating-point
+ * comparison.  Physical (l, n, m) = (two_l/2, two_n/2, two_m/2).
+ *
+ * Constraints: two_l >= 0, |two_n| <= two_l, |two_m| <= two_l, and all of
+ * two_l, two_n, two_m must share parity (all even = integer l; all odd =
+ * half-integer l).  For integer l (two_l even) the value matches
+ * su2_wigner_d(l, n, m, theta) up to tgamma-vs-factorial-table FP.
+ *
+ * @par Reference paper.tex line 537; notes/half_integer.md.
+ *
+ * NOTE: this is Tier 1 of bead `su2fft-n8e` -- evaluation only.  The
+ * half-integer FFT itself (forward/inverse on a 4pi-period phi/psi grid)
+ * is deferred to a follow-up bead.
+ */
+double _Complex su2_wigner_d_half(int two_l, int two_n, int two_m, double theta);
+
 /* ------- Wigner small-d sequence via three-term recurrence -------
  *
  * Fills out_d[0..l_max-l_min] with the REAL Sakurai-convention Wigner

@@ -69,7 +69,7 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
    path has the double path as its prec=53 anchor. Unit tests catch typos;
    cross-checks catch algorithmic errors. Prefer the latter.
 
-8. **GET FEEDBACK FAST.** `make test` runs 34 tests across 7 binaries in
+8. **GET FEEDBACK FAST.** `make test` runs 38 tests across 7 binaries in
    ~5s. Run it after every non-trivial change — don't code blind for 500
    lines then check. For a single binary: `make test/test_fft && build/test_fft`.
 
@@ -123,8 +123,9 @@ Quick reference:
 4. **`acb_dft_prod` is forward-only.** Backward = `conj(forward(conj(.)))`.
    Do not "simplify".
 
-5. **Integer-l only.** Half-integer support is bead `su2fft-n8e`; it
-   requires factorials → Gammas and a non-periodic grid.
+5. **Integer-l for the full FFT.**  `su2_wigner_d_half` (bead `n8e` Tier 1)
+   evaluates half-integer Wigner-d.  Full half-integer FFT is bead `u9q`;
+   it requires a 4pi-periodic grid and Gamma in the Jacobi recurrence.
 
 6. **`(N/(N-1))^2`** is the systematic Riemann error from the closed theta
    grid, not a bug. `test_ft_direct_constant` uses the modified target.  The GL
@@ -164,7 +165,7 @@ su2-fft/
     su2_ft_arb.c                    # arb direct FT
     su2_fft_arb.c                   # arb fast FFT (acb_dft_prod + conj trick)
 
-  tests/                            # 34 tests, 7 binaries (post ega)
+  tests/                            # 38 tests, 7 binaries (post n8e Tier 1)
     test_grid.c                     # Euler-angle grid invariants
     test_wigner.c                   # small-d unitarity, P_l limit
     test_ft.c                       # direct FT against analytic ground truths
@@ -194,7 +195,7 @@ su2-fft/
 ## Build & test
 
 ```bash
-# Full test suite — 34 tests, 7 binaries, ~5s
+# Full test suite — 38 tests, 7 binaries, ~5s
 make test
 
 # Benchmark sweep — direct vs fast, ~3s
@@ -228,7 +229,7 @@ perf record -F 4000 -e cpu_core/cycles/ -g build/compare
 
 Before claiming a Wigner / FT / FFT change is done:
 
-- [ ] `make test` passes — all 34 tests green.
+- [ ] `make test` passes — all 38 tests green.
 - [ ] `tests/test_fft.c::test_fft_matches_direct_random` still passes at
       the same 1e-10 tolerance (or tighter).
 - [ ] `tests/test_arb.c::test_arb_direct_vs_fast` still passes.

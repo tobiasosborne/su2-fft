@@ -131,6 +131,112 @@ double _Complex su2_wigner_d(int l, int n, int m, double theta)
     return pow_i(m - n) * d;
 }
 
+/* Half-integer-compatible Sakurai d^l_{n,m}(beta) via tgamma() instead of the
+ * fact() table.  Arguments encoded as 2l, 2n, 2m (integers); physical
+ * (l, n, m) = (two_l/2, two_n/2, two_m/2).  For integer l (two_l even) this
+ * reproduces wigner_d_phys up to tgamma-vs-factorial-table FP noise; for
+ * half-integer l (two_l odd) this enables spin-1/2, spin-3/2, ... matrix
+ * elements.
+ *
+ * The de Moivre sum (paper.tex line 537) generalises directly: factorials
+ * become Gammas via Gamma(k+1) = k!.  Because 2l, 2n, 2m share parity, the
+ * differences (m-n), (l+m), (l-n) are integers; therefore the summation
+ * index t still steps by 1 and the t-range is unchanged.  The cos/sin
+ * exponents pc = 2l + m - n - 2t = two_l + (m-n) - 2t and ps = n - m + 2t =
+ * -(m-n) + 2t are nonnegative integers across the valid t range.
+ *
+ * See notes/half_integer.md §1, paper.tex line 537. */
+static double wigner_d_phys_half(int two_l, int two_n, int two_m, double beta)
+{
+    /* Physical l, n, m -- may be half-integer. */
+    double l  = 0.5 * (double)two_l;
+    double nv = 0.5 * (double)two_n;
+    double mv = 0.5 * (double)two_m;
+
+    /* Integer offsets (m-n), (l+m), (l-n) via the 2x-encoding. */
+    int dnm = (two_m - two_n) / 2;             /* m - n */
+    int lpm = (two_l + two_m) / 2;             /* l + m */
+    int lmn = (two_l - two_n) / 2;             /* l - n */
+    int tmin = (dnm > 0) ? dnm : 0;
+    int tmax = (lpm < lmn) ? lpm : lmn;
+    if (tmin > tmax) return 0.0;
+
+    double c2 = cos(beta * 0.5);
+    double s2 = sin(beta * 0.5);
+
+    /* sqrt(Gamma(l+n+1) Gamma(l-n+1) Gamma(l+m+1) Gamma(l-m+1)) */
+    double norm = sqrt(tgamma(l + nv + 1.0) * tgamma(l - nv + 1.0)
+                     * tgamma(l + mv + 1.0) * tgamma(l - mv + 1.0));
+
+    double sum = 0.0;
+    for (int t = tmin; t <= tmax; ++t) {
+        /* sign = (-1)^{n - m + t} = (-1)^{-dnm + t}; -dnm + t mod 2 is the
+         * same as (t - dnm) mod 2, which we compute via the integer trick
+         * (((-dnm + t) & 1) ? -1 : 1).  Bit-and on a possibly-negative int
+         * is implementation-defined for two's complement -- be explicit. */
+        int  s_int = ((t - dnm) % 2 + 2) % 2;
+        double sign = s_int ? -1.0 : 1.0;
+
+        /* denom = Gamma(l+m-t+1) * Gamma(t+1) * Gamma(n-m+t+1) * Gamma(l-n-t+1)
+         * In integer-shift form: Gamma((lpm - t) + 1), Gamma(t + 1),
+         * Gamma((-dnm + t) + 1), Gamma((lmn - t) + 1). */
+        double denom = tgamma((double)(lpm - t) + 1.0)
+                     * tgamma((double)t + 1.0)
+                     * tgamma((double)(t - dnm) + 1.0)
+                     * tgamma((double)(lmn - t) + 1.0);
+
+        /* Exponents are nonnegative integers across the valid t range:
+         *   pc = 2l + m - n - 2t = two_l + dnm - 2t
+         *   ps = n - m + 2t      = -dnm + 2t
+         * Verified by mental check at l=1/2, m=n=1/2: dnm=0, t=0,
+         * pc = 1, ps = 0 -- d^{1/2}_{1/2,1/2} = cos(theta/2). */
+        int pc = two_l + dnm - 2 * t;
+        int ps = -dnm + 2 * t;
+
+        sum += sign * norm / denom * ipow(c2, pc) * ipow(s2, ps);
+    }
+    return sum;
+}
+
+/**
+ * @brief Half-integer-compatible matrix coefficient P^l_{n,m}(cos theta).
+ *
+ * Computes the paper's matrix element with l, n, m encoded as integers
+ * 2l, 2n, 2m so that half-integer spins (two_l odd) are representable
+ * without floating-point comparison.  Physical (l, n, m) = (two_l, two_n,
+ * two_m) / 2; all three must share parity (all even = integer l, all odd
+ * = half-integer l).  For integer l (two_l even) the result equals
+ * su2_wigner_d(l, n, m, theta) up to tgamma-vs-factorial-table FP noise.
+ *
+ * This is Tier 1 of bead `su2fft-n8e`: Wigner-d evaluation only.  The
+ * half-integer FFT itself (forward/inverse on a 4pi-period phi/psi grid)
+ * is deferred to a follow-up bead (see notes/half_integer.md §2-4).
+ *
+ * @param[in] two_l  Twice l; must be >= 0.
+ * @param[in] two_n  Twice n; must satisfy |two_n| <= two_l, same parity as two_l.
+ * @param[in] two_m  Twice m; must satisfy |two_m| <= two_l, same parity as two_l.
+ * @param[in] theta  Polar angle in radians.
+ * @return Complex value P^l_{n,m}(cos theta); 0 if |n| > l or |m| > l.
+ * @par Reference paper.tex line 537; notes/half_integer.md.
+ */
+double _Complex su2_wigner_d_half(int two_l, int two_n, int two_m, double theta)
+{
+    assert(two_l >= 0);
+    /* Same-parity invariant (CLAUDE.md rule 5 -- fail fast). */
+    assert((two_l & 1) == (two_n & 1));
+    assert((two_l & 1) == (two_m & 1));
+
+    if (abs(two_n) > two_l || abs(two_m) > two_l) return 0.0 + 0.0*I;
+
+    /* d^l_{n,m}(0) = delta_{n,m} at any spin (rotation by 0 is identity). */
+    if (theta == 0.0) return (two_n == two_m) ? (1.0 + 0.0*I) : (0.0 + 0.0*I);
+
+    double d = wigner_d_phys_half(two_l, two_n, two_m, theta);
+    /* m - n is an integer (both shift by 1/2 together), so pow_i is well-defined. */
+    int dmn = (two_m - two_n) / 2;
+    return pow_i(dmn) * d;
+}
+
 /**
  * @brief Fill out_d with d^l_{n,m}(theta) for l = l_min .. l_max via the
  *        Jacobi-lifted three-term ascending-l recurrence.
