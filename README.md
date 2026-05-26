@@ -111,6 +111,7 @@ src/su2_wigner.c           Stable Wigner small-d via the de Moivre sum
 src/su2_ft.c               Direct O(N^6) reference Fourier transform
 src/su2_fft.c              O(N^4) fast Fourier transform (double precision): su2_fft (forward), su2_fft_inv (inverse), su2_fft_gl and su2_fft_inv_gl (Gauss-Legendre theta nodes, bead ega)
 src/su2_gauss_legendre.c   GL node/weight computation via Newton iteration on P_N (bead ega)
+src/su2_convolve.c         Spectral convolution: su2_convolve(N, fhat, ghat, fghat) -- per-l matrix product, O(N^4) (bead d7v)
 src/su2_{wigner,ft,fft}_arb.c   FLINT arb/acb arbitrary-precision parallel path
 tests/test_*.c             TDD red/green checks for every piece (includes test_roundtrip.c: 13 tests for su2_fft_inv + GL variants; test_gauss_legendre.c: 3 testsets for GL nodes)
 bench/compare.c            Cross-comparison and timing at each N
@@ -142,7 +143,7 @@ A thin Julia wrapper lives at `julia/`. The package exposes `su2_fft`,
 using Pkg
 Pkg.develop(path="/path/to/su2-fft/julia")
 Pkg.build("SU2FFT")     # builds libsu2.so via make
-Pkg.test("SU2FFT")      # 714 tests; gold-standard fft ≈ ft_direct at 1e-10
+Pkg.test("SU2FFT")      # 729 tests; gold-standard fft ≈ ft_direct at 1e-10
 
 using SU2FFT
 N = 8
@@ -190,6 +191,21 @@ C storage `f[j1*N*N + k*N + j2]` (row-major) matches Julia's column-major
 No permutation needed for ccall. Coefficients are returned as a flat
 `Vector{ComplexF64}` of length `total_coeffs(N) = sum_{l=0..N-1}(2l+1)^2`;
 accessors handle the (l, m, n) offset arithmetic.
+
+### Spectral convolution (bead `su2fft-d7v`)
+
+`su2_convolve(int N, const double _Complex *fhat, const double _Complex *ghat,
+double _Complex *fghat)` computes the convolution of two functions whose spectra
+are already known.  For each `l in [0, N-1]` it multiplies the `(2l+1) x (2l+1)`
+blocks as matrices: `fghat_block(l) = fhat_block(l) * ghat_block(l)`.  This is
+the Peter-Weyl convolution theorem for nonabelian groups; on SU(2) the product is
+not commutative.  Cost: O(N^4).  Aliasing-safe for in-place use (`fghat == fhat`
+or `fghat == ghat`).  The operation itself achieves 1e-12 to 1e-13 residual on the
+spectral blocks.  End-to-end accuracy of `inverse(convolve(forward(f), forward(g)))`
+is limited by the phi/psi roundtrip floor (bead `su2fft-0t1`), not by the
+convolution itself.
+
+Julia: `SU2FFT.convolve(fhat, ghat, N)` wraps the C function via ccall.
 
 ### Half-integer Wigner-d (bead `su2fft-n8e` Tier 1)
 

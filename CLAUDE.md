@@ -69,7 +69,7 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
    path has the double path as its prec=53 anchor. Unit tests catch typos;
    cross-checks catch algorithmic errors. Prefer the latter.
 
-8. **GET FEEDBACK FAST.** `make test` runs 38 tests across 7 binaries in
+8. **GET FEEDBACK FAST.** `make test` runs 43 tests across 8 binaries in
    ~5s. Run it after every non-trivial change — don't code blind for 500
    lines then check. For a single binary: `make test/test_fft && build/test_fft`.
 
@@ -161,11 +161,12 @@ su2-fft/
     su2_ft.c                        # direct O(N^6) reference FT
     su2_fft.c                       # O(N^4) fast FFT (double): su2_fft (forward) + su2_fft_inv (inverse, bead 3lx) + su2_fft_gl / su2_fft_inv_gl (GL theta nodes, bead ega)
     su2_gauss_legendre.c            # GL node/weight computation via Newton iteration on P_N (bead ega)
+    su2_convolve.c                  # spectral convolution: per-l matrix product, O(N^4), aliasing-safe (bead d7v)
     su2_wigner_arb.c                # arb (acb_t) Wigner
     su2_ft_arb.c                    # arb direct FT
     su2_fft_arb.c                   # arb fast FFT (acb_dft_prod + conj trick)
 
-  tests/                            # 38 tests, 7 binaries (post n8e Tier 1)
+  tests/                            # 43 tests, 8 binaries (post d7v)
     test_grid.c                     # Euler-angle grid invariants
     test_wigner.c                   # small-d unitarity, P_l limit
     test_ft.c                       # direct FT against analytic ground truths
@@ -173,6 +174,7 @@ su2-fft/
     test_arb.c                      # arb direct vs arb fast; arb vs double
     test_roundtrip.c                # su2_fft_inv + GL variants: analytical synthesis 1e-12; roundtrip floors documented
     test_gauss_legendre.c           # GL nodes: basic properties, degree exactness to 2N-1, N=4 analytical
+    test_convolve.c                 # spectral convolution: 5 tests (zero, identity, l=1 diagonal, linearity, aliasing-safe in-place)
 
   bench/
     compare.c                       # direct vs fast timing + max-diff sweep
@@ -195,7 +197,7 @@ su2-fft/
 ## Build & test
 
 ```bash
-# Full test suite — 38 tests, 7 binaries, ~5s
+# Full test suite — 43 tests, 8 binaries, ~5s
 make test
 
 # Benchmark sweep — direct vs fast, ~3s
@@ -229,7 +231,7 @@ perf record -F 4000 -e cpu_core/cycles/ -g build/compare
 
 Before claiming a Wigner / FT / FFT change is done:
 
-- [ ] `make test` passes — all 38 tests green.
+- [ ] `make test` passes — all 43 tests green.
 - [ ] `tests/test_fft.c::test_fft_matches_direct_random` still passes at
       the same 1e-10 tolerance (or tighter).
 - [ ] `tests/test_arb.c::test_arb_direct_vs_fast` still passes.

@@ -43,6 +43,7 @@ const _SYM_COEFF_OFFSET  = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FFT_GL          = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FFT_INV_GL      = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_GL_NODES        = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_CONVOLVE        = Ref{Ptr{Cvoid}}(C_NULL)
 
 function __init__()
     # Fallback for the Julia 1.12 bundled-libgmp ABI mismatch: pre-load the
@@ -69,10 +70,11 @@ function __init__()
     _SYM_FFT_GL[]       = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_gl)
     _SYM_FFT_INV_GL[]   = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_inv_gl)
     _SYM_GL_NODES[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_gl_nodes_weights)
+    _SYM_CONVOLVE[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_convolve)
 end
 
 export fft, ft_direct, fft_inv, fft_gl, fft_inv_gl, gl_nodes_weights, wigner_d, wigner_d_half,
-       total_coeffs, coeff_offset, fhat_at, fhat_block, libsu2_path
+       total_coeffs, coeff_offset, fhat_at, fhat_block, libsu2_path, convolve
 
 # ----- Coefficient layout helpers (ccall to C) -----
 
@@ -303,6 +305,35 @@ function fhat_block(fhat::AbstractVector{ComplexF64}, l::Integer)
     off = coeff_offset(l)
     d = 2l + 1
     reshape(view(fhat, off+1 : off + d*d), d, d)
+end
+
+# ----- Convolution via the spectrum (bead d7v) -----
+
+"""
+    convolve(fhat::AbstractVector{ComplexF64},
+             ghat::AbstractVector{ComplexF64},
+             N::Integer) -> Vector{ComplexF64}
+
+SU(2) convolution in the Peter-Weyl spectrum (bead `d7v`). Per-l matrix
+product: `(f*g)hat(l)_{mn} = sum_p fhat(l)_{m,p} * ghat(l)_{p,n}`.
+
+Convolution on a nonabelian group is **not commutative**; convention here
+is `fhat * ghat` (matrix product order).
+
+Useful for smoothing on SO(3), template matching on rotated 3D images,
+group-averaged neural-net layers (per the bead description).
+"""
+function convolve(fhat::AbstractVector{ComplexF64},
+                  ghat::AbstractVector{ComplexF64},
+                  N::Integer)::Vector{ComplexF64}
+    nc = total_coeffs(N)
+    length(fhat) == nc || throw(ArgumentError("fhat must have length total_coeffs(N) = $nc"))
+    length(ghat) == nc || throw(ArgumentError("ghat must have length total_coeffs(N) = $nc"))
+    fghat = Vector{ComplexF64}(undef, nc)
+    ccall(_SYM_CONVOLVE[], Cvoid,
+          (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}, Ptr{ComplexF64}),
+          N, fhat, ghat, fghat)
+    return fghat
 end
 
 # ----- Diagnostics -----

@@ -362,4 +362,70 @@ using Random
         @test_throws ArgumentError SU2FFT.fft(zeros(ComplexF64, 1, 1, 1))
     end
 
+    @testset "convolve (bead d7v)" begin
+        @testset "identity-in-l=0 (constant-1 spectrum) acts as identity-on-DC" begin
+            # fhat = (1, 0, 0, ...): (f*g)hat(0)_{00} = ghat(0)_{00}; rest zero.
+            N = 6
+            nc = SU2FFT.total_coeffs(N)
+            fhat = zeros(ComplexF64, nc)
+            fhat[1] = 1.0 + 0im
+            Random.seed!(20260526)
+            ghat = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            fghat = SU2FFT.convolve(fhat, ghat, N)
+            @test fghat[1] ≈ ghat[1] atol=1e-13
+            @test maximum(abs, fghat[2:end]) < 1e-13
+        end
+
+        @testset "linearity in first argument" begin
+            N = 5
+            nc = SU2FFT.total_coeffs(N)
+            Random.seed!(2)
+            f1 = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            f2 = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            g  = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            a = 2.0 + 1.5im
+            b = -0.7 + 0.4im
+            cv1 = SU2FFT.convolve(f1, g, N)
+            cv2 = SU2FFT.convolve(f2, g, N)
+            cv_combo = SU2FFT.convolve(a .* f1 .+ b .* f2, g, N)
+            @test maximum(abs.(cv_combo .- (a .* cv1 .+ b .* cv2))) < 1e-12
+        end
+
+        @testset "diagonal l=1 explicit (4, 10, 18)" begin
+            # fhat(1) = diag(1,2,3), ghat(1) = diag(4,5,6) -> (fg)hat(1) = diag(4,10,18).
+            N = 2
+            nc = SU2FFT.total_coeffs(N)
+            fhat = zeros(ComplexF64, nc)
+            ghat = zeros(ComplexF64, nc)
+            fhat[1] = 1.0; ghat[1] = 1.0
+            off1 = SU2FFT.coeff_offset(1)
+            for idx in 0:2
+                flat = off1 + idx * 3 + idx + 1   # Julia 1-based
+                fhat[flat] = ComplexF64(idx + 1)
+                ghat[flat] = ComplexF64(idx + 4)
+            end
+            fghat = SU2FFT.convolve(fhat, ghat, N)
+            expected = [4.0, 10.0, 18.0]
+            for idx in 0:2
+                flat = off1 + idx * 3 + idx + 1
+                @test fghat[flat] ≈ expected[idx+1] + 0.0im atol=1e-13
+            end
+            # Off-diagonal zero.
+            for i in 0:2, j in 0:2
+                i == j && continue
+                @test abs(fghat[off1 + i * 3 + j + 1]) < 1e-13
+            end
+            @test fghat[1] ≈ 1.0 + 0.0im atol=1e-13
+        end
+
+        @testset "input validation" begin
+            @test_throws ArgumentError SU2FFT.convolve(zeros(ComplexF64, 1),
+                                                       zeros(ComplexF64, SU2FFT.total_coeffs(4)),
+                                                       4)
+            @test_throws ArgumentError SU2FFT.convolve(zeros(ComplexF64, SU2FFT.total_coeffs(4)),
+                                                       zeros(ComplexF64, 1),
+                                                       4)
+        end
+    end
+
 end

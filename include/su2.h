@@ -184,4 +184,23 @@ void su2_fft_inv(int N,
 void su2_fft_gl(int N, const double _Complex *f, double _Complex *fhat);
 void su2_fft_inv_gl(int N, const double _Complex *fhat, double _Complex *f);
 
+/* ------- Convolution via the spectrum (bead d7v) -------
+ *
+ * SU(2) convolution f * g via the Peter-Weyl convolution theorem:
+ * the spectrum of f*g is the per-l matrix product of the spectra.
+ *
+ * fghat(l)_{mn} = sum_p fhat(l)_{mp} * ghat(l)_{pn}
+ *
+ * @param[in]  N      Bandlimit (l in [0, N-1]).
+ * @param[in]  fhat   Length su2_total_coeffs(N).
+ * @param[in]  ghat   Length su2_total_coeffs(N).
+ * @param[out] fghat  Length su2_total_coeffs(N). May alias fhat or ghat.
+ *
+ * @par Complexity O(N^4).
+ */
+void su2_convolve(int N,
+                  const double _Complex *fhat,
+                  const double _Complex *ghat,
+                  double _Complex *fghat);
+
 #endif /* SU2_H */

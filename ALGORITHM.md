@@ -23,6 +23,7 @@ May 2026) or to a deliberate departure from it, which is called out explicitly.
 | `src/su2_wigner.c`                   | Stable evaluation of paper's P^l_{n,m}(cos theta).                  |
 | `src/su2_ft.c`                       | Direct O(N^6) reference Fourier transform.                          |
 | `src/su2_fft.c`                      | O(N^4) fast FFT (double, forward `su2_fft` + inverse `su2_fft_inv`). |
+| `src/su2_convolve.c`                 | Spectral convolution via per-l matrix product, O(N^4) (bead `su2fft-d7v`). |
 | `include/su2_arb.h`, `src/su2_*_arb.c` | FLINT arb/acb arbitrary-precision parallel path.                  |
 | `tests/test_*.c`                     | Red/green TDD checks for each piece.                                |
 | `bench/compare.c`                    | Cross-comparison and timing across N.                               |
@@ -336,7 +337,8 @@ to better than O(1) relative error at all coefficients must wait on bead
 Seven tests for the closed-grid path, all passing; plus six GL testsets added
 by bead `ega` (see §3.6).  The C suite stood at 34 tests after `ega` (was 18
 before `test_roundtrip`; grew to 25 with 3lx; to 34 with ega); bead `n8e`
-Tier 1 added 4 more to reach the current 38 (see §5.1).
+Tier 1 added 4 more to reach 38; bead `d7v` added 5 more to reach the
+current 43 (see §5.1 and §5.2).
 
 | test                        | what it checks                            | residual     |
 |-----------------------------|-------------------------------------------|--------------|
@@ -639,6 +641,81 @@ one or two FFT levels.
    `l in (1/2) N_0` (including half-integer).  The FFT restricts to integer
    `l`; half-integer FFT is bead `su2fft-u9q` (Tier 2).  See §5.1 below for
    the evaluation-only path that shipped in Tier 1.
+
+### 5.2 Convolution via the Peter-Weyl spectrum (bead `su2fft-d7v`)
+
+`src/su2_convolve.c` (80 LOC) implements spectral convolution on SU(2).
+
+**Convolution theorem on nonabelian groups.**  On an abelian group, convolution
+in the spatial domain corresponds to pointwise (Hadamard) multiplication in the
+frequency domain.  On a nonabelian group like SU(2) the Peter-Weyl decomposition
+replaces scalar frequencies with irreducible representation blocks indexed by `l`,
+and the convolution theorem becomes matrix multiplication per block:
+
+```
+(f * g)hat(l)_{mn} = sum_p  fhat(l)_{mp} * ghat(l)_{pn}
+```
+
+That is, for each `l in [0, N-1]`, the `(2l+1) x (2l+1)` coefficient block of
+`f * g` is the matrix product of the coefficient blocks of `f` and `g`.
+Reference: Folland, "A Course in Abstract Harmonic Analysis" §3.3; Sugiura,
+"Unitary Representations" §IV.3.
+
+**Non-commutativity.**  SU(2) is nonabelian, and the matrix product `A * B`
+is not generally equal to `B * A`.  The convolution operation `f * g` is therefore
+NOT commutative: computing `fhat * ghat` gives `(f*g)hat`, while `ghat * fhat`
+gives `(g*f)hat`.
+
+**Implementation.**  `su2_convolve(int N, const double _Complex *fhat,
+const double _Complex *ghat, double _Complex *fghat)` walks the coefficient array
+block-by-block.  For each `l`, it locates the `(2l+1) x (2l+1)` blocks of `fhat`
+and `ghat` via `su2_coeff_offset(l)`, accumulates the matrix product into a
+per-block temporary buffer, then copies to `fghat`.  The temporary is required for
+aliasing safety: the function supports in-place calls where `fghat == fhat` or
+`fghat == ghat`.  Declaration in `include/su2.h`.
+
+**Explicit l=1 check (from `tests/test_convolve.c`).**  At `l=1` the blocks are
+3x3.  With `fhat(1)` diagonal `diag(1, 2, 3)` and `ghat(1)` diagonal
+`diag(4, 5, 6)`, the matrix product is `diag(4, 10, 18)`.  This is verified to
+1e-12 in `test_convolve_l1_diagonal`.
+
+**Cost.**  The matrix multiply at each `l` costs `(2l+1)^3` flops.  Summing over
+`l in [0, N-1]`:
+
+```
+sum_{l=0}^{N-1} (2l+1)^3  ~  N^4 / 4
+```
+
+which is O(N^4) -- the same order as the forward FFT itself.
+
+**Test coverage.**  `tests/test_convolve.c` (173 LOC) has 5 tests: zero input,
+identity (constant-1 spectrum is the convolution identity on the group, so
+`fhat * identity_hat = fhat`), explicit l=1 diagonal (diag(1,2,3) * diag(4,5,6)
+= diag(4,10,18) to 1e-12), linearity (`(a*f + b*g) * h = a*(f*h) + b*(g*h)` to
+1e-12), and aliasing-safe in-place (`fghat == fhat`).  Julia: `SU2FFT.convolve`
+(ccall + symbol cache, +30 LOC in `julia/src/SU2FFT.jl`) mirrors these in 4
+testsets (+66 LOC in `julia/test/runtests.jl`).  All assertions hit 1e-12 to 1e-13.
+
+**Usability caveat -- end-to-end accuracy is gated by `su2fft-0t1`.**  The
+`su2_convolve` function operates entirely in the spectral domain: it takes `fhat`
+and `ghat` as inputs and returns `(f*g)hat` as output, with residual 1e-12 to
+1e-13.  The convolution itself is exact at that precision.  However, to apply
+convolution to actual function values, the typical workflow is:
+
+```
+fghat = su2_convolve(su2_fft(f), su2_fft(g))
+fg    = su2_fft_inv(fghat)
+```
+
+The accuracy of this pipeline is limited by the forward+inverse roundtrip accuracy,
+not by `su2_convolve`.  As documented in §3.6, the phi/psi Stage-1 closed-grid
+aliasing at high `|m|, |n|` produces O(1) roundtrip error at those modes.  Until
+bead `su2fft-0t1` lands, applications that apply `su2_fft` to real function values
+and then inverse-transform the convolution output will see that ~0.2 aliasing floor,
+not 1e-12.  Spectral-domain processing (operating directly on externally-supplied
+`fhat` and `ghat` without a forward step) is unaffected and achieves 1e-12.
+
+C tests: 43/43 (was 38 before `d7v`).  Julia tests: 729/729 (was 714).
 
 ### 5.1 Half-integer Wigner-d evaluation (bead `su2fft-n8e` Tier 1)
 

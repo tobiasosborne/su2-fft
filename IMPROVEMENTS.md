@@ -179,15 +179,26 @@ Touches: `src/su2_fft.c` + grid choice; new `SU2_GRID_OPEN` flag.
 
 ## Tier 3 — new capabilities the FFT unlocks
 
-### 10. Convolution on SU(2) via the spectrum
+### ~~10. Convolution on SU(2) via the spectrum~~ — DONE (d7v)
 
-Convolution on a non-abelian group is matrix-valued: `(f ⋆ g)^(l) = f̂(l) · ĝ(l)`
-(a matrix product, not a Hadamard).  Once forward + inverse FFTs exist, a
-`su2_convolve(f, g)` is ten lines + an `acb_mat_mul`.  Useful for: smoothing
-on SO(3) (via the SU(2) → SO(3) quotient), template matching on rotated
-3-D images, group-averaged neural-network layers.
+Shipped in bead `su2fft-d7v`.  `src/su2_convolve.c` (80 LOC): `su2_convolve(N,
+fhat, ghat, fghat)` performs a per-l `(2l+1) x (2l+1)` matrix product.  Aliasing-
+safe via per-block temporary.  `tests/test_convolve.c` (173 LOC, 5 tests).  Julia:
+`SU2FFT.convolve(fhat, ghat, N)` (+30 LOC ccall, +66 LOC tests).  43/43 C tests,
+729/729 Julia tests; all assertions 1e-12 to 1e-13.
 
-Touches: new `src/su2_convolve.c`, depends on #7 (DONE, 3lx) + #8b (su2fft-0t1, for exact spectrum roundtrip).
+Explicit l=1 verification: `diag(1,2,3) * diag(4,5,6) = diag(4,10,18)` to 1e-12
+(from `test_convolve_l1_diagonal`).
+
+Note on noncommutativity: matrix product is not symmetric; `convolve(f, g)` and
+`convolve(g, f)` are distinct (SU(2) is nonabelian).
+
+Usability caveat: the convolution operation itself is exact at 1e-12 to 1e-13.
+End-to-end accuracy of `inverse(convolve(forward(f), forward(g)))` is limited by
+the phi/psi roundtrip floor (~0.2 at N=8 GL; see `ALGORITHM.md §3.6` and §5.2).
+Bead `su2fft-0t1` must land before spatial-domain convolution is useful.
+
+See `ALGORITHM.md §5.2` for full derivation.
 
 ### 11. SO(3) FFT via the Z₂ quotient
 
@@ -210,14 +221,24 @@ tool.  Cite `bastidas2024complexification` from `bib-Delgado-Lp-2016.bib`.
 
 Touches: new `src/qsp/` directory; non-trivial (~1 week) but standalone.
 
-### 13. Spherical-harmonic FFT (S² = SU(2)/U(1))
+### 13. Spherical-harmonic FFT (S² = SU(2)/U(1)) — bead `su2fft-5fb`
 
 Project SU(2) coefficients onto fixed-`m=0` subspace → harmonic transform
 on the sphere.  Provides a single-binary alternative to s2kit/SHTns for the
-common case.  Requires full half-integer FFT (`su2fft-u9q`) and inverse FFT
-(`3lx`, already done).  Blocked on `u9q`.
+common case.
 
-Touches: thin wrapper, depends on `su2fft-u9q` and bead `3lx` (done).
+**Most tractable remaining application bead** (post `d7v`).  The integer-l
+subcase (psi-projection of the SU(2) FFT onto the m=0 column) requires only
+integer-l transforms; `su2fft-u9q` (full half-integer FFT) is not needed for
+this restricted path.  The inverse FFT (`3lx`) is already in place.  Blocked
+on `su2fft-0t1` for useful roundtrip precision, but the algorithmic work is
+straightforward once `0t1` lands.
+
+The half-integer-l extension (spin-weighted spherical harmonics) does require
+`u9q` and remains blocked on that bead.
+
+Touches: thin wrapper `src/su2_fft_sphere.c`, depends on bead `3lx` (done) and
+`0t1` (phi/psi grid resolution).
 
 ---
 
@@ -296,4 +317,13 @@ complete the performance picture.
 Bead `su2fft-n8e` Tier 1 shipped half-integer Wigner-d evaluation (+85 LOC C,
 +82 LOC test, +25 LOC Julia binding, +47 LOC Julia tests).  38/38 C tests,
 714/714 Julia tests.  Full half-integer FFT is `su2fft-u9q` (P2, ~500-1000 LOC
-estimated).  `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on `n8e`.
+estimated).  `su2fft-erv` and `su2fft-5fb` (half-integer extension) are blocked
+on `u9q`, not on `n8e`.
+
+Bead `su2fft-d7v` shipped spectral convolution (`src/su2_convolve.c`, 80 LOC;
+`tests/test_convolve.c`, 173 LOC; Julia bindings +30/+66 LOC).  43/43 C tests,
+729/729 Julia tests.  Explicit l=1 check: `diag(1,2,3) * diag(4,5,6) =
+diag(4,10,18)` to 1e-12.  Convolution itself is exact at 1e-12 to 1e-13;
+end-to-end forward→convolve→inverse accuracy is gated by `su2fft-0t1`.
+Most tractable remaining application bead is `su2fft-5fb` (integer-l spherical
+FFT), which does not require `u9q`.

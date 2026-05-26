@@ -23,7 +23,7 @@ https://arxiv.org/abs/2605.23923 — Delgado et al., May 2026.
 To verify nothing rotted before you start:
 
 ```sh
-make test                  # 38 tests, 7 binaries; takes ~5 s
+make test                  # 43 tests, 8 binaries; takes ~5 s
 make bench && build/compare  # benchmark sweep, ~3 s
 ```
 
@@ -81,6 +81,19 @@ C test count: 38/38 (was 34).  Julia: `SU2FFT.wigner_d_half` ccall binding
 (+25 LOC); 714/714 Julia tests pass (was 274).  Tier 2 (full half-integer FFT)
 is filed as bead `su2fft-u9q`.  Beads `su2fft-erv` and `su2fft-5fb` are blocked
 on `u9q`, not on `n8e`.
+
+Bead `su2fft-d7v` (convolution via the Peter-Weyl spectrum) shipped:
+`src/su2_convolve.c` (80 LOC, new file): `su2_convolve(N, fhat, ghat, fghat)`
+performs a per-l `(2l+1) x (2l+1)` matrix product.  Aliasing-safe via per-block
+temporary; declaration in `include/su2.h`.  `tests/test_convolve.c` (173 LOC,
+5 tests): zero input, identity, explicit l=1 diagonal (`diag(1,2,3) * diag(4,5,6)
+= diag(4,10,18)` to 1e-12), linearity, aliasing-safe in-place.  Julia:
+`SU2FFT.convolve(fhat, ghat, N)` ccall (+30 LOC in `julia/src/SU2FFT.jl`); 4
+Julia testsets mirroring the C side (+66 LOC in `julia/test/runtests.jl`).
+C tests: 43/43 (was 38).  Julia tests: 729/729 (was 714).  All assertions
+1e-12 to 1e-13.  The convolution itself is exact at that precision; end-to-end
+`inverse(convolve(forward(f), forward(g)))` accuracy is limited by the phi/psi
+roundtrip floor (bead `su2fft-0t1`), not by `su2_convolve`.  See `ALGORITHM.md §5.2`.
 
 ---
 
@@ -183,14 +196,22 @@ unblocks the application beads at useful precision.
 **After `su2fft-0t1`: `su2fft-cvh` (SIMD), then `su2fft-lg8` (OpenMP over (m, n)).**
 Both remain pure performance wins, independent of the grid change.
 
-**Application beads -- wait on `su2fft-0t1`.**  `su2fft-d7v` (convolution),
-`su2fft-31x` (QSP primitives), `su2fft-erv` (SO(3)), `su2fft-5fb` (spherical)
-are all formally unblocked by `3lx`.  `ega` raised the precision floor (exact DC,
-exact low modes) but the worst-case spectrum roundtrip at high `|m|, |n|` is
-still O(1) error.  None of these achieves useful precision at all coefficients
-until `0t1` lands.  Additionally, `erv` and `5fb` need full half-integer FFT
-(`su2fft-u9q`), not just Wigner-d evaluation (`n8e` Tier 1).  Pick up
-`su2fft-0t1` before starting any of these.
+**`su2fft-d7v` (convolution) shipped.**  `su2_convolve` and `SU2FFT.convolve`
+are in the codebase.  43/43 C tests, 729/729 Julia tests.  Spectral convolution
+itself is 1e-12 to 1e-13.  End-to-end forward→convolve→inverse accuracy is gated
+by `su2fft-0t1`, as with all application beads.
+
+**Remaining application beads -- priority order after `su2fft-0t1`:**
+- `su2fft-5fb` (spherical-harmonic FFT): most tractable next.  Integer-l only;
+  it is the psi-projection of the SU(2) FFT onto the m=0 subspace.  No
+  half-integer needed, so `u9q` is not a blocker for the straightforward
+  integer-l case.  Blocked by `0t1` for useful roundtrip precision.
+- `su2fft-31x` (QSP primitives): needs research into the Haah/Chao construction.
+  Non-trivial math; estimate ~1 week.  Formally unblocked by `3lx`.
+- `su2fft-erv` (SO(3) FFT): waits on `u9q` (full half-integer FFT).  Not just
+  Wigner-d evaluation.
+- `su2fft-0t1` (phi/psi aliasing fix): remains the top P1 priority.  Unblocks
+  all of the above at practical precision.
 
 **Trig-sharing bead `su2fft-xxb`** remains a sound ~10% seed optimisation
 (hoisting `cos(theta_k/2)` / `sin(theta_k/2)` out of the (m, n) loop at fixed
@@ -391,6 +412,31 @@ DC is fixed.  Phi/psi aliasing floor remains.  Bead `su2fft-0t1` is the follow-u
 Tier 2 (full half-integer FFT: 4pi-periodic phi/psi grid, Gamma in the Jacobi
 recurrence, new FFTW plans, ~500-1000 LOC) is filed as bead `su2fft-u9q`.
 Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on this bead.
+
+**`su2fft-d7v` (convolution via the Peter-Weyl spectrum) — DONE.**
+- `src/su2_convolve.c`: 80 LOC (new file).  `su2_convolve(int N, const double
+  _Complex *fhat, const double _Complex *ghat, double _Complex *fghat)` does a
+  per-l `(2l+1) x (2l+1)` matrix product.  Aliasing-safe via per-block temporary;
+  supports in-place calls (`fghat == fhat` or `fghat == ghat`).
+- `include/su2.h`: declaration added.
+- `tests/test_convolve.c`: 173 LOC (new file), 5 tests:
+  - zero input: `fghat == 0` when either input is zero.
+  - identity: constant-1 spectrum acts as convolution identity (`fhat * identity_hat = fhat`).
+  - explicit l=1 diagonal: `diag(1,2,3) * diag(4,5,6) = diag(4,10,18)` to 1e-12.
+  - linearity: `convolve(a*f + b*g, h) = a*convolve(f,h) + b*convolve(g,h)` to 1e-12.
+  - aliasing-safe in-place: `su2_convolve(N, fhat, ghat, fhat)` matches the
+    out-of-place result to 1e-12.
+- `julia/src/SU2FFT.jl`: `SU2FFT.convolve(fhat, ghat, N)` ccall + symbol cache
+  (+30 LOC).
+- `julia/test/runtests.jl`: 4 testsets mirroring the C side (+66 LOC).
+- C tests: 43/43 (was 38).  Julia tests: 729/729 (was 714).  All assertions
+  1e-12 to 1e-13.
+- Convolution cost: O(sum_l (2l+1)^3) = O(N^4), same order as the FFT.
+- The convolution itself is exact at 1e-12 to 1e-13.  End-to-end accuracy of
+  `inverse(convolve(forward(f), forward(g)))` is limited by the phi/psi Stage-1
+  closed-grid aliasing (~0.2 floor at N=8 GL; see `ALGORITHM.md §3.6`).  Spectral-
+  domain convolution on externally-supplied spectra is unaffected.
+- See `ALGORITHM.md §5.2` for the full derivation and usability caveat.
 
 ---
 
