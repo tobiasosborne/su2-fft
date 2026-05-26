@@ -276,4 +276,33 @@ void su2_fft_sphere_inv(int N,
                         const double _Complex *fhat_sph,
                         double _Complex *f_sph);
 
+/* ------- Resolved-grid spherical-harmonic FFT (bead su2fft-9qk) -------
+ *
+ * Sphere-FFT variant built over `su2_fft_resolved` instead of `su2_fft`.
+ * Same spectrum layout (N^2 entries, m=0 row per fhat(l) block), but the
+ * sample grid is the OPEN P-point phi grid (P = 2N-1) and the N-point
+ * Gauss-Legendre theta grid:
+ *
+ *   f_sph_resolved[j1 * N + k]   row-major (phi_index, theta_index)
+ *   j1 in [0, P-1],  k in [0, N-1].
+ *   phi[j1]   = -pi + j1 * 2pi/P
+ *   theta[k]  = arccos(x_k), x_k the k-th N-point GL node.
+ *
+ * Total sample count: P * N = (2N-1) * N (vs N*N for the closed wrapper).
+ *
+ * Inherits the exact spectrum roundtrip property of `su2_fft_resolved`
+ * (bead su2fft-0t1): forward(inverse(fhat)) = fhat to working precision.
+ *
+ * See notes/0t1_resolved_grid_design.md §3-§5.
+ */
+size_t su2_sphere_resolved_total_samples(int N);
+
+void su2_fft_sphere_resolved(int N,
+                             const double _Complex *f_sph,
+                             double _Complex *fhat_sph);
+
+void su2_fft_sphere_inv_resolved(int N,
+                                 const double _Complex *fhat_sph,
+                                 double _Complex *f_sph);
+
 #endif /* SU2_H */

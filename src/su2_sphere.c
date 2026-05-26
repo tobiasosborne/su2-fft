@@ -135,3 +135,139 @@ void su2_fft_sphere_inv(int N,
     free(f_su2);
     free(fhat_su2);
 }
+
+/* =====================================================================
+ * Resolved-grid sphere FFT (bead su2fft-9qk).
+ *
+ * Same thin-wrapper idea as the closed variant above, but layered over
+ * `su2_fft_resolved` / `su2_fft_resolved_inv` (bead su2fft-0t1) instead
+ * of `su2_fft` / `su2_fft_inv`.  The underlying SU(2) sample array uses
+ * the open P-point phi/psi grid (P = 2N-1) and N-point Gauss-Legendre
+ * theta nodes, with layout f_su2[j1*N*P + k*P + j2] via
+ * `su2_resolved_sample_index`.  Spectrum layout is unchanged (N^2
+ * entries, m=0 row per fhat(l) block).
+ *
+ * Because `su2_fft_resolved` gives exact spectrum roundtrip at working
+ * precision (notes/0t1_resolved_grid_design.md §5, §6), the resolved
+ * sphere variant inherits the same property -- no closed-grid Riemann
+ * floor.
+ * ===================================================================== */
+
+/* Total number of sphere samples on the resolved grid. */
+size_t su2_sphere_resolved_total_samples(int N)
+{
+    if (N < 1) return 0;
+    size_t P = (size_t)(2 * N - 1);
+    return P * (size_t)N;
+}
+
+/**
+ * @brief Forward S^2 FFT on the resolved (open P-point phi + GL theta) grid.
+ *
+ * @param[in]  N         Bandlimit (l in [0, N-1]).
+ * @param[in]  f_sph     Length P*N complex sample array, P = 2N-1,
+ *                       row-major (j1, k) with j1 = phi index, k = theta index.
+ * @param[out] fhat_sph  Length su2_sphere_total_coeffs(N) = N^2 spectrum.
+ *                       Same (l, n) layout as `su2_fft_sphere`.
+ *
+ * @par Reference paper.tex line 554 (Peter-Weyl synthesis);
+ *      notes/0t1_resolved_grid_design.md §3-§5; bead su2fft-9qk.
+ * @par Complexity O(N^4) (dominated by `su2_fft_resolved`).
+ */
+void su2_fft_sphere_resolved(int N,
+                             const double _Complex *f_sph,
+                             double _Complex *fhat_sph)
+{
+    if (N < 2 || !f_sph || !fhat_sph) return;
+
+    const int P = 2 * N - 1;
+
+    size_t nsamp_su2 = su2_resolved_total_samples(N);
+    double _Complex *f_su2 = malloc(nsamp_su2 * sizeof(double _Complex));
+    if (!f_su2) return;
+
+    /* Replicate psi-independent input across all j2 in [0, P-1]:
+     *   f_su2[j1, k, j2] = f_sph[j1, k]  for all j2.
+     * j1, j2 both range over [0, P-1]; k over [0, N-1]. */
+    for (int j1 = 0; j1 < P; ++j1) {
+        for (int k = 0; k < N; ++k) {
+            double _Complex v = f_sph[(size_t)j1 * (size_t)N + (size_t)k];
+            for (int j2 = 0; j2 < P; ++j2) {
+                f_su2[su2_resolved_sample_index(N, j1, k, j2)] = v;
+            }
+        }
+    }
+
+    size_t ncoeff_su2 = su2_total_coeffs(N);
+    double _Complex *fhat_su2 = malloc(ncoeff_su2 * sizeof(double _Complex));
+    if (!fhat_su2) { free(f_su2); return; }
+
+    su2_fft_resolved(N, f_su2, fhat_su2);
+
+    /* Extract the m=0 row from each fhat(l) block.  Identical to the
+     * closed wrapper -- the spectrum layout is invariant across grids. */
+    size_t idx_sph = 0;
+    for (int l = 0; l < N; ++l) {
+        size_t off = su2_coeff_offset(l);
+        int d = 2 * l + 1;
+        for (int n = -l; n <= l; ++n) {
+            size_t flat_su2 = off + (size_t)(0 + l) * (size_t)d + (size_t)(n + l);
+            fhat_sph[idx_sph++] = fhat_su2[flat_su2];
+        }
+    }
+
+    free(f_su2);
+    free(fhat_su2);
+}
+
+/**
+ * @brief Inverse S^2 FFT on the resolved grid (Peter-Weyl synthesis, m=0).
+ *
+ * @param[in]  N         Bandlimit.
+ * @param[in]  fhat_sph  Length N^2 spectrum (same layout as forward output).
+ * @param[out] f_sph     Length P*N complex sample array, P = 2N-1,
+ *                       row-major (j1, k).
+ *
+ * @par Reference paper.tex line 554; notes/0t1_resolved_grid_design.md §3;
+ *      bead su2fft-9qk.  Inherits exact spectrum roundtrip from bead 0t1.
+ */
+void su2_fft_sphere_inv_resolved(int N,
+                                 const double _Complex *fhat_sph,
+                                 double _Complex *f_sph)
+{
+    if (N < 2 || !fhat_sph || !f_sph) return;
+
+    const int P = 2 * N - 1;
+
+    size_t ncoeff_su2 = su2_total_coeffs(N);
+    double _Complex *fhat_su2 = calloc(ncoeff_su2, sizeof(double _Complex));
+    if (!fhat_su2) return;
+
+    /* Embed fhat_sph[l, n] into fhat_su2[l][m=0, n]; rest = 0. */
+    size_t idx_sph = 0;
+    for (int l = 0; l < N; ++l) {
+        size_t off = su2_coeff_offset(l);
+        int d = 2 * l + 1;
+        for (int n = -l; n <= l; ++n) {
+            size_t flat_su2 = off + (size_t)(0 + l) * (size_t)d + (size_t)(n + l);
+            fhat_su2[flat_su2] = fhat_sph[idx_sph++];
+        }
+    }
+
+    size_t nsamp_su2 = su2_resolved_total_samples(N);
+    double _Complex *f_su2 = malloc(nsamp_su2 * sizeof(double _Complex));
+    if (!f_su2) { free(fhat_su2); return; }
+
+    su2_fft_resolved_inv(N, fhat_su2, f_su2);
+
+    /* By psi-invariance every j2 slice is equal; take j2=0 and copy out. */
+    for (int j1 = 0; j1 < P; ++j1) {
+        for (int k = 0; k < N; ++k) {
+            f_sph[(size_t)j1 * (size_t)N + (size_t)k] =
+                f_su2[su2_resolved_sample_index(N, j1, k, 0)];
+        }
+    }
+
+    free(f_su2);
+    free(fhat_su2);
+}
