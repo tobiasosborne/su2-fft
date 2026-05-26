@@ -428,4 +428,78 @@ using Random
         end
     end
 
+    @testset "spherical FFT (bead 5fb)" begin
+        @testset "sphere_total_coeffs == N^2" begin
+            for N in (1, 2, 4, 8)
+                @test SU2FFT.sphere_total_coeffs(N) == N * N
+            end
+        end
+
+        @testset "fft_sphere(zeros) -> zeros" begin
+            N = 6
+            f = zeros(ComplexF64, N, N)
+            fhat = SU2FFT.fft_sphere(f)
+            @test length(fhat) == SU2FFT.sphere_total_coeffs(N)
+            @test maximum(abs, fhat) < 1e-13
+        end
+
+        @testset "fft_sphere_inv(zeros) -> zeros" begin
+            N = 6
+            fhat = zeros(ComplexF64, SU2FFT.sphere_total_coeffs(N))
+            f = SU2FFT.fft_sphere_inv(fhat, N)
+            @test size(f) == (N, N)
+            @test maximum(abs, f) < 1e-13
+        end
+
+        @testset "inv(delta_{l=0, n=0}) -> constant 1" begin
+            # Spherical analog of inv(delta_{l=0,m=n=0}) = constant.
+            # fhat_sph[1] corresponds to (l=0, n=0); synthesis = 1 everywhere.
+            N = 8
+            fhat = zeros(ComplexF64, SU2FFT.sphere_total_coeffs(N))
+            fhat[1] = 1.0 + 0im
+            f = SU2FFT.fft_sphere_inv(fhat, N)
+            @test maximum(abs.(f .- (1.0 + 0im))) < 1e-13
+        end
+
+        @testset "inv(delta_{l=1, n=0}) -> 3*cos(theta_k)" begin
+            # fhat_sph[(l=1, n=0)] index: sum_{l'<1}(2l'+1) + (n+l) + 1 = 1 + 1 + 1 = 3.
+            N = 8
+            fhat = zeros(ComplexF64, SU2FFT.sphere_total_coeffs(N))
+            fhat[3] = 1.0 + 0im
+            f = SU2FFT.fft_sphere_inv(fhat, N)
+            # f_sph[k+1, j1+1] = 3*cos(theta_k); theta_k = k*pi/(N-1).
+            max_err = 0.0
+            for k in 0:N-1
+                theta_k = k * pi / (N - 1)
+                expected = 3.0 * cos(theta_k) + 0im
+                for j1 in 0:N-1
+                    got = f[k+1, j1+1]
+                    max_err = max(max_err, abs(got - expected))
+                end
+            end
+            @test max_err < 1e-12
+        end
+
+        @testset "linearity of fft_sphere_inv" begin
+            N = 6
+            Random.seed!(20260526)
+            nc = SU2FFT.sphere_total_coeffs(N)
+            fh1 = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            fh2 = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            alpha = 2.0 + 1.5im
+            beta  = -0.7 + 0.4im
+            f1 = SU2FFT.fft_sphere_inv(fh1, N)
+            f2 = SU2FFT.fft_sphere_inv(fh2, N)
+            fc = SU2FFT.fft_sphere_inv(alpha .* fh1 .+ beta .* fh2, N)
+            @test maximum(abs.(fc .- (alpha .* f1 .+ beta .* f2))) < 1e-12
+        end
+
+        @testset "input validation" begin
+            @test_throws ArgumentError SU2FFT.fft_sphere(zeros(ComplexF64, 4, 5))
+            @test_throws ArgumentError SU2FFT.fft_sphere(zeros(ComplexF64, 1, 1))
+            @test_throws ArgumentError SU2FFT.fft_sphere_inv(zeros(ComplexF64, 1), 4)
+            @test_throws ArgumentError SU2FFT.fft_sphere_inv(zeros(ComplexF64, 4), 1)
+        end
+    end
+
 end

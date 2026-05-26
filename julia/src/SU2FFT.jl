@@ -44,6 +44,9 @@ const _SYM_FFT_GL          = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FFT_INV_GL      = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_GL_NODES        = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_CONVOLVE        = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_FFT_SPHERE      = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_FFT_SPHERE_INV  = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_SPHERE_COEFFS   = Ref{Ptr{Cvoid}}(C_NULL)
 
 function __init__()
     # Fallback for the Julia 1.12 bundled-libgmp ABI mismatch: pre-load the
@@ -71,10 +74,14 @@ function __init__()
     _SYM_FFT_INV_GL[]   = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_inv_gl)
     _SYM_GL_NODES[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_gl_nodes_weights)
     _SYM_CONVOLVE[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_convolve)
+    _SYM_FFT_SPHERE[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_sphere)
+    _SYM_FFT_SPHERE_INV[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_sphere_inv)
+    _SYM_SPHERE_COEFFS[]  = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_sphere_total_coeffs)
 end
 
 export fft, ft_direct, fft_inv, fft_gl, fft_inv_gl, gl_nodes_weights, wigner_d, wigner_d_half,
-       total_coeffs, coeff_offset, fhat_at, fhat_block, libsu2_path, convolve
+       total_coeffs, coeff_offset, fhat_at, fhat_block, libsu2_path, convolve,
+       fft_sphere, fft_sphere_inv, sphere_total_coeffs
 
 # ----- Coefficient layout helpers (ccall to C) -----
 
@@ -334,6 +341,56 @@ function convolve(fhat::AbstractVector{ComplexF64},
           (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}, Ptr{ComplexF64}),
           N, fhat, ghat, fghat)
     return fghat
+end
+
+# ----- Spherical-harmonic FFT on S^2 (bead 5fb) -----
+
+"""
+    sphere_total_coeffs(N::Integer) -> Int
+
+Number of spherical-harmonic coefficients at bandlimit N: equals N^2.
+"""
+sphere_total_coeffs(N::Integer)::Int =
+    Int(ccall(_SYM_SPHERE_COEFFS[], Csize_t, (Cint,), N))
+
+"""
+    fft_sphere(f_sph::AbstractMatrix{ComplexF64}) -> Vector{ComplexF64}
+
+Forward spherical FFT (bead `5fb`). Input is an N x N matrix indexed
+`f_sph[k+1, j1+1] = f(theta_k, phi_{j1})`. Returns the spherical
+spectrum as a flat Vector{ComplexF64} of length N^2 indexed by (l, n)
+with l in [0, N-1], n in [-l, l] at offset `sum_{l'<l}(2l'+1) + (n+l) + 1`
+(1-based).
+
+Same closed-grid tolerance and aliasing floor as the underlying SU(2)
+FFT (bead `0t1`).
+"""
+function fft_sphere(f_sph::AbstractMatrix{ComplexF64})::Vector{ComplexF64}
+    N = size(f_sph, 1)
+    size(f_sph) == (N, N) || throw(ArgumentError("f_sph must be (N, N); got $(size(f_sph))"))
+    N >= 2 || throw(ArgumentError("N must be >= 2, got $N"))
+    fhat = Vector{ComplexF64}(undef, sphere_total_coeffs(N))
+    ccall(_SYM_FFT_SPHERE[], Cvoid,
+          (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
+          N, f_sph, fhat)
+    return fhat
+end
+
+"""
+    fft_sphere_inv(fhat_sph::AbstractVector{ComplexF64}, N::Integer) -> Matrix{ComplexF64}
+
+Inverse spherical FFT. Given a spectrum of length `sphere_total_coeffs(N) = N^2`,
+returns an `N x N` Matrix{ComplexF64} of sphere samples.
+"""
+function fft_sphere_inv(fhat_sph::AbstractVector{ComplexF64}, N::Integer)::Matrix{ComplexF64}
+    nc = sphere_total_coeffs(N)
+    length(fhat_sph) == nc || throw(ArgumentError("fhat_sph must have length $nc; got $(length(fhat_sph))"))
+    N >= 2 || throw(ArgumentError("N must be >= 2, got $N"))
+    f = Matrix{ComplexF64}(undef, N, N)
+    ccall(_SYM_FFT_SPHERE_INV[], Cvoid,
+          (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
+          N, fhat_sph, f)
+    return f
 end
 
 # ----- Diagnostics -----

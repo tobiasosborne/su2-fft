@@ -112,8 +112,10 @@ src/su2_ft.c               Direct O(N^6) reference Fourier transform
 src/su2_fft.c              O(N^4) fast Fourier transform (double precision): su2_fft (forward), su2_fft_inv (inverse), su2_fft_gl and su2_fft_inv_gl (Gauss-Legendre theta nodes, bead ega)
 src/su2_gauss_legendre.c   GL node/weight computation via Newton iteration on P_N (bead ega)
 src/su2_convolve.c         Spectral convolution: su2_convolve(N, fhat, ghat, fghat) -- per-l matrix product, O(N^4) (bead d7v)
+src/su2_sphere.c           Spherical-harmonic FFT on S^2: su2_fft_sphere, su2_fft_sphere_inv, su2_sphere_total_coeffs -- thin wrapper over su2_fft/su2_fft_inv, m=0 projection (bead 5fb)
 src/su2_{wigner,ft,fft}_arb.c   FLINT arb/acb arbitrary-precision parallel path
 tests/test_*.c             TDD red/green checks for every piece (includes test_roundtrip.c: 13 tests for su2_fft_inv + GL variants; test_gauss_legendre.c: 3 testsets for GL nodes)
+tests/test_sphere.c        Spherical-harmonic FFT: 6 testsets (Y_0^0 synthesis 1e-13, Y_1^0 synthesis 1e-12, linearity 1e-12, roundtrip, total-coeffs, constant forward floor) (bead 5fb)
 bench/compare.c            Cross-comparison and timing at each N
 bench/vis_dump.c           Spectrum dump in Python-readable format
 bench/visualize.py         Matplotlib spectrum plot
@@ -143,7 +145,7 @@ A thin Julia wrapper lives at `julia/`. The package exposes `su2_fft`,
 using Pkg
 Pkg.develop(path="/path/to/su2-fft/julia")
 Pkg.build("SU2FFT")     # builds libsu2.so via make
-Pkg.test("SU2FFT")      # 729 tests; gold-standard fft ≈ ft_direct at 1e-10
+Pkg.test("SU2FFT")      # 744 tests; gold-standard fft ≈ ft_direct at 1e-10
 
 using SU2FFT
 N = 8
@@ -192,6 +194,27 @@ No permutation needed for ccall. Coefficients are returned as a flat
 `Vector{ComplexF64}` of length `total_coeffs(N) = sum_{l=0..N-1}(2l+1)^2`;
 accessors handle the (l, m, n) offset arithmetic.
 
+### Spherical-harmonic FFT on S^2 (bead `su2fft-5fb`)
+
+`SU2FFT.fft_sphere`, `SU2FFT.fft_sphere_inv`, and `SU2FFT.sphere_total_coeffs`
+wrap `su2_fft_sphere` / `su2_fft_sphere_inv` / `su2_sphere_total_coeffs` from
+`src/su2_sphere.c`.  Input is a 2-D array indexed `f_sph[k+1, j1+1]` (theta
+row k, phi column j1); output is a flat vector of length N^2.  Storage:
+`fhat_sph[l^2 + (n+l)]` indexed by (l, n).
+
+```julia
+using SU2FFT
+N = 8
+f = rand(ComplexF64, N, N)          # f[k+1, j1+1] = f(theta_k, phi_{j1})
+fhat_sph = SU2FFT.fft_sphere(f)    # length N^2 = 64
+f_back   = SU2FFT.fft_sphere_inv(fhat_sph, N)
+```
+
+Thin wrapper over `fft` / `fft_inv`: replicates input over psi, calls the
+full SU(2) FFT, and extracts the m=0 row from each l-block.  Inherits the
+closed-grid floor from the SU(2) path (bead `su2fft-0t1` applies).
+Y_0^0 and Y_1^0 analytical synthesis pass at 1e-13 and 1e-12 respectively.
+
 ### Spectral convolution (bead `su2fft-d7v`)
 
 `su2_convolve(int N, const double _Complex *fhat, const double _Complex *ghat,
@@ -219,7 +242,9 @@ issues.  The implementation uses the same de Moivre sum as `su2_wigner_d` with
 
 This is Tier 1 (evaluation only).  Full half-integer FFT (phi/psi grid on 4pi,
 Gamma in the Jacobi recurrence, new FFTW plans) is bead `su2fft-u9q` (Tier 2).
-Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on this bead.
+Bead `su2fft-erv` is blocked on `u9q`.  Bead `su2fft-5fb` (integer-l
+spherical FFT) shipped without `u9q` — see the spherical-harmonic FFT section
+above.
 
 ### Status
 

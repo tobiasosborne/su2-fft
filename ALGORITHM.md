@@ -337,8 +337,8 @@ to better than O(1) relative error at all coefficients must wait on bead
 Seven tests for the closed-grid path, all passing; plus six GL testsets added
 by bead `ega` (see §3.6).  The C suite stood at 34 tests after `ega` (was 18
 before `test_roundtrip`; grew to 25 with 3lx; to 34 with ega); bead `n8e`
-Tier 1 added 4 more to reach 38; bead `d7v` added 5 more to reach the
-current 43 (see §5.1 and §5.2).
+Tier 1 added 4 more to reach 38; bead `d7v` added 5 more to reach 43; bead
+`5fb` added 6 more to reach the current 49 (see §5.1, §5.2, §5.3).
 
 | test                        | what it checks                            | residual     |
 |-----------------------------|-------------------------------------------|--------------|
@@ -715,7 +715,58 @@ and then inverse-transform the convolution output will see that ~0.2 aliasing fl
 not 1e-12.  Spectral-domain processing (operating directly on externally-supplied
 `fhat` and `ghat` without a forward step) is unaffected and achieves 1e-12.
 
-C tests: 43/43 (was 38 before `d7v`).  Julia tests: 729/729 (was 714).
+C tests: 43/43 (was 38 before `d7v`; grew to 49 with bead `5fb`).  Julia tests: 729/729 (was 714; grew to 744 with bead `5fb`).
+
+### 5.3 Spherical-harmonic FFT on S^2 (bead `su2fft-5fb`)
+
+`src/su2_sphere.c` (138 LOC) implements `su2_fft_sphere`, `su2_fft_sphere_inv`,
+and `su2_sphere_total_coeffs` as a thin wrapper over `su2_fft` / `su2_fft_inv`.
+
+**Math.**  S^2 = SU(2)/U(1).  A function on S^2 depends on two Euler angles
+(theta, phi) and is independent of psi.  Under the SU(2) Fourier transform,
+psi-independence forces fhat(l)_{m,n} = 0 for m != 0: the spectrum has support
+only on the m=0 column of each l-block.  The (2l+1) m-values collapse to the
+single entry n=-l..l at m=0, giving total coefficient count:
+
+```
+sum_{l=0}^{N-1} (2l+1)  =  N^2
+```
+
+versus N(4N^2-1)/3 for the full SU(2) transform.
+
+**Implementation.**  `su2_fft_sphere` replicates the 2-D input `f_sph[j1*N + k]`
+(row-major (j1, k)) over the psi dimension to build an N x N x N array, calls
+`su2_fft`, and extracts the m=0 row from each l-block.  The output
+`fhat_sph[sum_{l'<l}(2l'+1) + (n+l)]` is indexed by (l, n) in a flat array of
+length N^2.  `su2_fft_sphere_inv` reverses the procedure: it pads fhat_sph back
+to a full SU(2) fhat (m != 0 entries set to zero) and calls `su2_fft_inv`.
+
+The implementation inherits the closed-grid Riemann floor from `su2_fft`:
+`forward(constant)` at N=8 returns fhat_sph[0] = 1.284, close to the closed-grid
+expectation `(N/(N-1))^2 = 1.306` (the small discrepancy is a grid-averaging
+effect of the psi replication).  Exact DC normalisation and spectrum roundtrip
+precision are gated on bead `su2fft-0t1` (phi/psi grid resolution), which
+applies to the sphere path for the same reason it applies to the full SU(2) path.
+
+**Analytical tests (from `tests/test_sphere.c`).**
+
+- `Y_0^0` -> constant 1: fhat_sph[0] extracted, analytical synthesis residual
+  1e-13.
+- `Y_1^0` -> `3*cos(theta)`: single-coefficient synthesis residual 1e-12.
+- Linearity: `fft_sphere(a*f + b*g) = a*fft_sphere(f) + b*fft_sphere(g)` to
+  1e-12.
+- Constant forward at N=8: fhat_sph[0] = 1.284 (documented as the closed-grid
+  floor; exact value gated by `su2fft-0t1`).
+
+**Test counts.**  C: 49/49 (was 43 before 5fb; +6 new testsets in
+`tests/test_sphere.c`, 131 LOC).  Julia: 744/744 (was 729; +15 assertions across
+7 testsets in `julia/test/runtests.jl`, using `SU2FFT.fft_sphere`,
+`fft_sphere_inv`, `sphere_total_coeffs` ccall wrappers added to
+`julia/src/SU2FFT.jl`, +57 LOC).
+
+**Unblocks.**  `su2fft-cce` (weather-data sphere FFT visualisation) is now
+formally unblocked.  Practical precision at high-l coefficients remains gated on
+`su2fft-0t1`.
 
 ### 5.1 Half-integer Wigner-d evaluation (bead `su2fft-n8e` Tier 1)
 
@@ -760,5 +811,6 @@ gained a `wigner_d_half(two_l, two_n, two_m, theta)` ccall binding (+25 LOC);
 routine for external code needing spin-1/2 matrix elements.  Tier 2 (bead
 `su2fft-u9q`) covers the full forward+inverse FFT for half-integer `l`, which
 requires a 4pi-periodic phi/psi grid, Gamma in the Jacobi recurrence, and new
-FFTW plans (~500-1000 LOC estimated).  Beads `su2fft-erv` and `su2fft-5fb`
-remain blocked on `u9q`, not on this bead.
+FFTW plans (~500-1000 LOC estimated).  Bead `su2fft-erv` remains blocked on
+`u9q`.  Bead `su2fft-5fb` (integer-l spherical FFT) shipped without `u9q` —
+it uses the integer-l path only; see §5.3.

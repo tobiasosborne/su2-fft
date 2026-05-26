@@ -203,4 +203,28 @@ void su2_convolve(int N,
                   const double _Complex *ghat,
                   double _Complex *fghat);
 
+/* ------- Spherical-harmonic FFT on S^2 (bead 5fb) -------
+ *
+ * S^2 = SU(2)/U(1). Functions on the sphere extend to psi-independent
+ * functions on SU(2); their spectrum lives entirely on the m=0 row of
+ * each fhat(l) block.
+ *
+ * Storage:
+ *   f_sph[j1*N + k]       row-major (phi_index, theta_index)
+ *   fhat_sph[ sum_{l'<l}(2l'+1) + (n+l) ]   l in [0, N-1], n in [-l, l]
+ *   Total spectrum entries: N^2.
+ *
+ * Thin wrapper over su2_fft / su2_fft_inv; same closed-grid Riemann
+ * tolerance and phi/psi aliasing floor (bead su2fft-0t1).
+ */
+size_t su2_sphere_total_coeffs(int N);
+
+void su2_fft_sphere(int N,
+                    const double _Complex *f_sph,
+                    double _Complex *fhat_sph);
+
+void su2_fft_sphere_inv(int N,
+                        const double _Complex *fhat_sph,
+                        double _Complex *f_sph);
+
 #endif /* SU2_H */

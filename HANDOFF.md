@@ -23,7 +23,7 @@ https://arxiv.org/abs/2605.23923 — Delgado et al., May 2026.
 To verify nothing rotted before you start:
 
 ```sh
-make test                  # 43 tests, 8 binaries; takes ~5 s
+make test                  # 49 tests, 9 binaries; takes ~5 s
 make bench && build/compare  # benchmark sweep, ~3 s
 ```
 
@@ -79,8 +79,9 @@ Bead `su2fft-n8e` Tier 1 (half-integer Wigner-d evaluation) shipped:
 `su2_wigner_d_half` (+85 LOC).  `tests/test_wigner.c` gained 4 tests (+82 LOC).
 C test count: 38/38 (was 34).  Julia: `SU2FFT.wigner_d_half` ccall binding
 (+25 LOC); 714/714 Julia tests pass (was 274).  Tier 2 (full half-integer FFT)
-is filed as bead `su2fft-u9q`.  Beads `su2fft-erv` and `su2fft-5fb` are blocked
-on `u9q`, not on `n8e`.
+is filed as bead `su2fft-u9q`.  Bead `su2fft-erv` is blocked on `u9q`.
+Bead `su2fft-5fb` (integer-l spherical FFT) shipped without `u9q` — see
+`su2fft-5fb` entry below.
 
 Bead `su2fft-d7v` (convolution via the Peter-Weyl spectrum) shipped:
 `src/su2_convolve.c` (80 LOC, new file): `su2_convolve(N, fhat, ghat, fghat)`
@@ -94,6 +95,20 @@ C tests: 43/43 (was 38).  Julia tests: 729/729 (was 714).  All assertions
 1e-12 to 1e-13.  The convolution itself is exact at that precision; end-to-end
 `inverse(convolve(forward(f), forward(g)))` accuracy is limited by the phi/psi
 roundtrip floor (bead `su2fft-0t1`), not by `su2_convolve`.  See `ALGORITHM.md §5.2`.
+
+Bead `su2fft-5fb` (spherical-harmonic FFT on S^2) shipped:
+`src/su2_sphere.c` (138 LOC, new file): `su2_fft_sphere`, `su2_fft_sphere_inv`,
+`su2_sphere_total_coeffs`.  Thin wrapper over `su2_fft` / `su2_fft_inv`: replicates
+the 2-D input over psi, calls the SU(2) FFT, extracts the m=0 row from each l-block.
+Total coefficients N^2 (vs N(4N^2-1)/3 for full SU(2)).  `tests/test_sphere.c`
+(131 LOC, 6 testsets): Y_0^0 analytical synthesis 1e-13, Y_1^0 synthesis
+(`3*cos(theta)`) 1e-12, linearity 1e-12, roundtrip, total-coeffs, constant
+forward floor.  Julia: `SU2FFT.fft_sphere`, `fft_sphere_inv`,
+`sphere_total_coeffs` ccall wrappers (+57 LOC in `julia/src/SU2FFT.jl`); 7
+testsets (+82 LOC in `julia/test/runtests.jl`).  C tests: 49/49 (was 43).
+Julia tests: 744/744 (was 729).  Inherits the closed-grid floor; exact DC and
+spectrum roundtrip precision gated on `su2fft-0t1`.  Unblocks `su2fft-cce`
+(weather-data sphere FFT visualisation).  See `ALGORITHM.md §5.3`.
 
 ---
 
@@ -134,7 +149,8 @@ in source comments at point of use.
    `d^{two_l/2}_{two_n/2, two_m/2}(theta)` via the de Moivre sum with `tgamma`
    replacing `fact()`.  Full half-integer FFT (4pi-periodic phi/psi grid, Gamma
    in the Jacobi recurrence, new FFTW plans) is bead `su2fft-u9q` (Tier 2).
-   Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on `n8e`.
+   Bead `su2fft-erv` is blocked on `u9q`.  Bead `su2fft-5fb` (integer-l
+   spherical FFT) shipped without `u9q`.
 
 7. **The closed-grid (N/(N-1))^2 factor** is the systematic Riemann error
    that makes `test_ft_direct_constant` use the modified target `(N/(N-1))^2`
@@ -201,11 +217,15 @@ are in the codebase.  43/43 C tests, 729/729 Julia tests.  Spectral convolution
 itself is 1e-12 to 1e-13.  End-to-end forward→convolve→inverse accuracy is gated
 by `su2fft-0t1`, as with all application beads.
 
+**`su2fft-5fb` (spherical-harmonic FFT) shipped.**  `su2_fft_sphere` and
+`su2_fft_sphere_inv` are in `src/su2_sphere.c` (138 LOC).  49/49 C tests,
+744/744 Julia tests.  Y_0^0 synthesis: 1e-13.  Y_1^0 synthesis: 1e-12.
+Constant forward at N=8: fhat_sph[0] = 1.284 (closed-grid floor; exact gated
+on `su2fft-0t1`).  Unblocks `su2fft-cce` (weather-data sphere FFT visualisation).
+
 **Remaining application beads -- priority order after `su2fft-0t1`:**
-- `su2fft-5fb` (spherical-harmonic FFT): most tractable next.  Integer-l only;
-  it is the psi-projection of the SU(2) FFT onto the m=0 subspace.  No
-  half-integer needed, so `u9q` is not a blocker for the straightforward
-  integer-l case.  Blocked by `0t1` for useful roundtrip precision.
+- `su2fft-cce` (weather-data sphere FFT visualisation): now formally unblocked
+  by `su2fft-5fb`.  Practical spectrum precision gated on `su2fft-0t1`.
 - `su2fft-31x` (QSP primitives): needs research into the Haah/Chao construction.
   Non-trivial math; estimate ~1 week.  Formally unblocked by `3lx`.
 - `su2fft-erv` (SO(3) FFT): waits on `u9q` (full half-integer FFT).  Not just
@@ -411,7 +431,8 @@ DC is fixed.  Phi/psi aliasing floor remains.  Bead `su2fft-0t1` is the follow-u
 
 Tier 2 (full half-integer FFT: 4pi-periodic phi/psi grid, Gamma in the Jacobi
 recurrence, new FFTW plans, ~500-1000 LOC) is filed as bead `su2fft-u9q`.
-Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on this bead.
+Bead `su2fft-erv` is blocked on `u9q`.  Bead `su2fft-5fb` (integer-l spherical
+FFT) shipped without `u9q`; see `su2fft-5fb` DONE block below.
 
 **`su2fft-d7v` (convolution via the Peter-Weyl spectrum) — DONE.**
 - `src/su2_convolve.c`: 80 LOC (new file).  `su2_convolve(int N, const double
@@ -437,6 +458,33 @@ Beads `su2fft-erv` and `su2fft-5fb` are blocked on `u9q`, not on this bead.
   closed-grid aliasing (~0.2 floor at N=8 GL; see `ALGORITHM.md §3.6`).  Spectral-
   domain convolution on externally-supplied spectra is unaffected.
 - See `ALGORITHM.md §5.2` for the full derivation and usability caveat.
+
+**`su2fft-5fb` (spherical-harmonic FFT on S^2) — DONE.**
+- `src/su2_sphere.c`: 138 LOC (new file).  `su2_fft_sphere(int N, const double
+  _Complex *f_sph, double _Complex *fhat_sph)`, `su2_fft_sphere_inv(int N,
+  const double _Complex *fhat_sph, double _Complex *f_sph)`,
+  `su2_sphere_total_coeffs(int N)`.  Declarations in `include/su2.h`.
+- Storage: `f_sph[j1*N + k]` row-major (j1, k); `fhat_sph[sum_{l'<l}(2l'+1) + (n+l)]`
+  indexed by (l, n).  Total coefficients: N^2 (vs N(4N^2-1)/3 for full SU(2)).
+- Implementation: replicate f_sph over psi dimension, call `su2_fft`, extract
+  m=0 row from each l-block.  Inverse: pad fhat_sph to full fhat (m != 0 zeroed),
+  call `su2_fft_inv`.
+- `tests/test_sphere.c`: 131 LOC (new file), 6 testsets:
+  - Y_0^0 analytical synthesis: 1e-13 residual.
+  - Y_1^0 analytical synthesis (`3*cos(theta)`): 1e-12 residual.
+  - Linearity: 1e-12.
+  - Roundtrip (documents closed-grid floor).
+  - `sphere_total_coeffs(N) == N^2` verified.
+  - Constant forward at N=8: fhat_sph[0] = 1.284 (close to `(N/(N-1))^2 = 1.306`;
+    documented as the closed-grid floor; exact gated on `su2fft-0t1`).
+- `julia/src/SU2FFT.jl`: `fft_sphere`, `fft_sphere_inv`, `sphere_total_coeffs`
+  ccall wrappers (+57 LOC).
+- `julia/test/runtests.jl`: 7 testsets mirroring C side (+82 LOC).
+- C tests: 49/49 (was 43).  Julia tests: 744/744 (was 729).
+- Inherits the closed-grid phi/psi aliasing floor from `su2_fft`; exact DC and
+  spectrum roundtrip precision gated on `su2fft-0t1`.
+- Unblocks `su2fft-cce` (weather-data sphere FFT visualisation).
+- See `ALGORITHM.md §5.3` for full derivation.
 
 ---
 
