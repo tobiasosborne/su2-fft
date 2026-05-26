@@ -1,0 +1,21 @@
+# Python deps for the weather-data sphere FFT demo (bead su2fft-cce).
+# Tested versions are pinned to >= the ones installed during initial development.
+#
+# Install:
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r examples/requirements.txt
+#
+# Core scientific stack
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.7
+
+# Data IO
+netCDF4>=1.6
+xarray>=2023.0
+requests>=2.31
+
+# 3D rendering
+pyvista[jupyter]>=0.44   # 'jupyter' extras supply trame/trame-vtk for export_html
+plotly>=5.20
+imageio>=2.31

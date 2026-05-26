@@ -81,6 +81,46 @@ is 9.61e-154, corresponding to 154 verified decimal digits.
 
 ---
 
+## Demo: weather on the sphere (bead `su2fft-cce`)
+
+January 2024 surface air temperature from the NOAA NCEP/NCAR Reanalysis
+(2.5° lat-lon, 30 MB NetCDF) interpolated onto the resolved sphere FFT grid
+(P=2N-1 open phi, N=64 Gauss-Legendre theta nodes), rendered on the unit
+sphere, and Fourier-transformed to expose its spherical-harmonic spectrum.
+
+![Surface temperature, 2024-01](examples/figures/weather_pyvista.png)
+
+The fit slope on the per-l power spectrum is `power(l) ~ l^-2.76` over
+`l in [3, 29]` -- within the typical geophysical 1/l^p decay band -- and the
+operator-identity residual `|fhat - forward(inverse(fhat))|` lands at
+1.71e-13, i.e. machine precision on the resolved-grid sphere wrapper
+(`su2_fft_sphere_resolved`, bead `9qk`).
+
+![Spherical-harmonic spectrum](examples/figures/weather_spectrum.png)
+
+Interactive 3D renders (drag/rotate in a browser):
+- [examples/figures/weather_pyvista.html](examples/figures/weather_pyvista.html)
+- [examples/figures/weather_plotly.html](examples/figures/weather_plotly.html)
+
+Reproduce:
+```sh
+make lib                                              # build libsu2.so
+python3 -m venv .venv
+.venv/bin/pip install -r examples/requirements.txt
+.venv/bin/python examples/weather_demo.py             # ~7 s on a laptop
+```
+
+Pipeline files:
+```
+python/su2fft.py                              ctypes bindings to libsu2.so
+examples/weather/fetch_interpolate.py         NOAA download + lat-lon -> sphere grid
+examples/weather/render_3d.py                 matplotlib + pyvista + plotly
+examples/weather/spectrum.py                  per-l power + |fhat(l, n)| heatmap
+examples/weather_demo.py                      end-to-end orchestrator
+```
+
+---
+
 ## Quick start
 
 ```sh
