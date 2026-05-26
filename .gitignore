@@ -33,3 +33,8 @@ __pycache__/
 proof/locks/
 
 # Generated spectrum images live under build/ already (covered above)
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
