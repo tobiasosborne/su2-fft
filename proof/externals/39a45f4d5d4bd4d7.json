@@ -1,0 +1,8 @@
+{
+  "id": "39a45f4d5d4bd4d7",
+  "name": "Cooley-Tukey",
+  "source": "Cooley \u0026 Tukey, 1965. Radix-2 1D FFT achieves O(N log N) via recursive halving.",
+  "content_hash": "6499015ce9f42e3d6068821b8d4d6bf215716754a8d0debd35b20e38d3ad648b",
+  "created": "2026-05-26T04:20:32.439944549Z",
+  "notes": ""
+}

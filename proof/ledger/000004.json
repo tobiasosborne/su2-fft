@@ -1,0 +1,1 @@
+{"type":"def_added","timestamp":"2026-05-26T04:20:39.079355509Z","definition":{"id":"1cf8f7c7b394ba1b","name":"Haar-measure-SU2","definition":"Normalised Haar measure on SU(2) in Euler angles: dg = (1/(8 pi^2)) sin(theta) dphi dtheta dpsi (paper line 666).","created":"2026-05-26T04:20:39.078251074Z"}}

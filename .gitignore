@@ -1,0 +1,35 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+
+# Third-party paper materials (arxiv 2605.23923) -- excluded from the public
+# repo to respect the authors' copyright.  Download yourself with:
+#   curl -L -o source.tar.gz https://arxiv.org/e-print/2605.23923
+#   tar -xzf source.tar.gz
+paper.tex
+bib-Delgado-Lp-2016.bib
+FT_SU2.png
+source.tar.gz
+
+# perf data
+perf.data*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# af proof local state that isn't worth versioning
+proof/locks/
+
+# Generated spectrum images live under build/ already (covered above)

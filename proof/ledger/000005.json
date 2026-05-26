@@ -1,0 +1,1 @@
+{"type":"def_added","timestamp":"2026-05-26T04:20:39.090850163Z","definition":{"id":"d628704769dd608a","name":"Irrep-SU2","definition":"For each l in (1/2) N_0 there is one irreducible unitary representation T_l : SU(2) -\u003e U(2l+1), with matrix coefficients t^l_{nm}(g), -l \u003c= n,m \u003c= l (paper line 488).","created":"2026-05-26T04:20:39.089890047Z"}}

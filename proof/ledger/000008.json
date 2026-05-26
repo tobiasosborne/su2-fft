@@ -1,0 +1,1 @@
+{"type":"def_added","timestamp":"2026-05-26T04:20:58.549682391Z","definition":{"id":"63a45d8739d5c24c","name":"Bandlimit","definition":"f is bandlimited to N if its Fourier coefficient f-hat(l)_{mn} vanishes for all l \u003e= N (paper line 678). N controls both representation truncation and sample count per Euler angle.","created":"2026-05-26T04:20:58.548410728Z"}}

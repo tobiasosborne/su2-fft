@@ -1,0 +1,1 @@
+{"type":"def_added","timestamp":"2026-05-26T04:20:58.529421336Z","definition":{"id":"ac909b186ccea292","name":"Sampling-grid","definition":"Uniform N x N x N grid on (phi, theta, psi): phi_{j1} = -pi + j1 * 2pi/(N-1); psi_{j2} = -pi + j2 * 2pi/(N-1); theta_k = k * pi/(N-1); j1,j2,k in {0,...,N-1} (paper line 684).","created":"2026-05-26T04:20:58.528178957Z"}}

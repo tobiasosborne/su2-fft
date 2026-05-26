@@ -1,0 +1,8 @@
+{
+  "id": "658d87b84db9dd1a",
+  "name": "Jacobi-recurrence",
+  "source": "Three-term recurrence for Jacobi polynomials P_n^{(a,b)}(x); reduces to Bonnet at a=b=0.",
+  "content_hash": "b45349d30458a1b6ee04505534d1acb10f4b082f6bb39b166873d1b6b3fdaf7c",
+  "created": "2026-05-26T04:20:32.46423153Z",
+  "notes": ""
+}

@@ -1,0 +1,8 @@
+{
+  "id": "fa8f3290f40b73ca",
+  "name": "Bonnet-recurrence",
+  "source": "Classical Legendre three-term recurrence: (n+1)P_{n+1}(x) = (2n+1) x P_n(x) - n P_{n-1}(x), P_0=1, P_{-1}=0.",
+  "content_hash": "a8f372626b070e5517f8dc591c2804581176e2e150e4ede41ce55c7a5e37ae79",
+  "created": "2026-05-26T04:20:32.454088302Z",
+  "notes": ""
+}
