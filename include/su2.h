@@ -184,6 +184,55 @@ void su2_fft_inv(int N,
 void su2_fft_gl(int N, const double _Complex *f, double _Complex *fhat);
 void su2_fft_inv_gl(int N, const double _Complex *fhat, double _Complex *f);
 
+/* ------- Resolved-grid forward/inverse (bead su2fft-0t1) -------
+ *
+ * The default `su2_fft` and `su2_fft_gl` use an N-point CLOSED uniform
+ * phi/psi grid; modes |m|, |n| > (N-1)/2 alias.  The resolved variant uses
+ * the OPEN P-point grid with P = 2N-1, exactly matching the SU(2) bandlimit
+ * of 2N-1 modes per axis.  Combined with Gauss-Legendre theta nodes, this
+ * gives exact spectrum roundtrip at working precision.
+ *
+ * Sample storage:  f[j1 * N * P + k * P + j2], P = 2N-1.
+ *                  j1 in [0, P-1], k in [0, N-1], j2 in [0, P-1].
+ *                  phi[j1] = -pi + j1 * 2pi/P,  psi[j2] = -pi + j2 * 2pi/P,
+ *                  theta[k] = arccos(x_k), x_k the k-th N-point GL node.
+ *
+ * Coefficient storage: same as su2_total_coeffs(N) layout.
+ *
+ * See notes/0t1_resolved_grid_design.md.
+ */
+static inline int su2_resolved_P(int N) { return 2*N - 1; }
+
+static inline size_t su2_resolved_total_samples(int N)
+{
+    size_t P = (size_t)(2*N - 1);
+    return P * P * (size_t)N;
+}
+
+static inline size_t su2_resolved_sample_index(int N, int j1, int k, int j2)
+{
+    int P = 2*N - 1;
+    return (size_t)j1 * (size_t)N * (size_t)P + (size_t)k * (size_t)P + (size_t)j2;
+}
+
+/* O(N^6) reference FT on the resolved grid.  Ground truth for the cross-check
+ * test of su2_fft_resolved.  Mirrors su2_ft_direct but on the new grid. */
+void su2_ft_direct_resolved(int N,
+                            const double _Complex *f,
+                            double _Complex *fhat);
+
+/* O(N^4) forward / inverse FFT on the resolved grid.  Pair these together --
+ * the sample layout f[j1*N*P + k*P + j2] (P = 2N-1) is shared.  Inverse is the
+ * exact Peter-Weyl synthesis at the resolved phi/psi + GL theta points; forward
+ * is the (exact, for bandlimited inputs) analysis with norm = 1/(2 P^2).
+ * See notes/0t1_resolved_grid_design.md §4-§5. */
+void su2_fft_resolved(int N,
+                      const double _Complex *f,
+                      double _Complex *fhat);
+void su2_fft_resolved_inv(int N,
+                          const double _Complex *fhat,
+                          double _Complex *f);
+
 /* ------- Convolution via the spectrum (bead d7v) -------
  *
  * SU(2) convolution f * g via the Peter-Weyl convolution theorem:

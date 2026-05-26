@@ -170,13 +170,14 @@ use Gauss-Legendre theta nodes instead of the closed grid.  This fixes the DC
 normalisation: `fft_gl(constant_function)` returns `fhat(0,0,0) = 1.0` exactly
 (to 1e-12), where the closed-grid path returned `(N/(N-1))^2 = 1.31` at N=8.
 Single-coefficient synthesis at l=0 also hits 1e-12.  However, a separate
-phi/psi aliasing error remains: at N=8 the spectrum roundtrip `fft_gl(fft_inv_gl(fhat))`
-shows leakage of ~0.197 to non-DC coefficients for a constant input, and
-single-coefficient roundtrip error of ~0.344 (max over l in [0, N-1]).  The
-worst case is near `|m|, |n| = N-1`, where the error reaches ~3.  Root cause
-is the closed-grid phi/psi fold over-counting endpoints; the `(-1)^{n+m}` phase
-does not undo this for modes near the bandlimit.  Bead `su2fft-0t1` tracks the
-structural fix.
+phi/psi aliasing error remains in the `_gl` path: at N=8 the spectrum roundtrip
+`fft_gl(fft_inv_gl(fhat))` shows leakage of ~0.197 to non-DC coefficients for a
+constant input, and single-coefficient roundtrip error of ~0.344 (max over l in
+[0, N-1]).  The root cause is the closed-grid phi/psi fold over-counting
+endpoints; the `(-1)^{n+m}` phase does not undo this for modes near the
+bandlimit.  Bead `su2fft-0t1` eliminated this floor in the `su2_fft_resolved`
+path (spectrum roundtrip 4.45e-15 at N=8); the `_gl` path retains the documented
+floor as a historical record.
 
 **Closed-grid roundtrip caveat.**  `SU2FFT.fft(SU2FFT.fft_inv(fhat, N))` is NOT
 machine precision under the closed-grid Riemann theta quadrature.  At N=16 with
@@ -184,7 +185,8 @@ random `fhat`, the relative error is approximately 5.6.  Single-coefficient
 analytical synthesis IS machine precision (1e-12 to 1e-13): if `fhat` has exactly
 one non-zero entry `(l, m, n)` then `fft_inv(fhat, N)` recovers the closed-form
 sample `t^l_{n,m}(g)` to 1e-12.  Applications that require tight spectrum
-roundtrip tolerance should wait on bead `su2fft-0t1` (phi/psi grid resolution).
+roundtrip tolerance should use the resolved-grid path (`su2_fft_resolved` /
+`su2_fft_resolved_inv`, bead `su2fft-0t1`): max relative error 4.45e-15 at N=8.
 
 ### Layout convention
 
@@ -212,7 +214,8 @@ f_back   = SU2FFT.fft_sphere_inv(fhat_sph, N)
 
 Thin wrapper over `fft` / `fft_inv`: replicates input over psi, calls the
 full SU(2) FFT, and extracts the m=0 row from each l-block.  Inherits the
-closed-grid floor from the SU(2) path (bead `su2fft-0t1` applies).
+closed-grid floor from the SU(2) path; a resolved-grid sphere variant is
+tracked as a follow-on to bead `su2fft-0t1`.
 Y_0^0 and Y_1^0 analytical synthesis pass at 1e-13 and 1e-12 respectively.
 
 ### Spectral convolution (bead `su2fft-d7v`)
@@ -225,8 +228,9 @@ the Peter-Weyl convolution theorem for nonabelian groups; on SU(2) the product i
 not commutative.  Cost: O(N^4).  Aliasing-safe for in-place use (`fghat == fhat`
 or `fghat == ghat`).  The operation itself achieves 1e-12 to 1e-13 residual on the
 spectral blocks.  End-to-end accuracy of `inverse(convolve(forward(f), forward(g)))`
-is limited by the phi/psi roundtrip floor (bead `su2fft-0t1`), not by the
-convolution itself.
+is limited by the roundtrip floor of the chosen forward/inverse path.  Using
+`su2_fft_resolved` / `su2_fft_resolved_inv` (bead `0t1`) gives roundtrip
+4.45e-15 at N=8; the closed-grid paths retain their documented ~0.197 floor.
 
 Julia: `SU2FFT.convolve(fhat, ghat, N)` wraps the C function via ccall.
 
@@ -254,6 +258,19 @@ mismatch is in `__init__`. See bead `su2fft-e5z` for the robust-fix plan.
 
 Follow-ups: arb-precision bindings (Arblib.jl), BinaryBuilder for portable
 distribution, macOS `.dylib`, registration to the Julia General registry.
+
+---
+
+## What is working
+
+- `su2_fft` / `su2_fft_inv`: double-precision O(N^4) forward+inverse, closed grid. Cross-validated to 2.21e-13 vs direct at N=24.
+- `su2_fft_gl` / `su2_fft_inv_gl`: Gauss-Legendre theta nodes; DC normalisation exact. Phi/psi aliasing documented (bead `ega`).
+- `su2_fft_resolved` / `su2_fft_resolved_inv` (bead `0t1`, May 2026): open P=2N-1 phi/psi grid + GL theta; exact spectrum roundtrip. Max relative error 4.45e-15 at N=8 (was ~0.197 on the closed-grid GL path).
+- `su2_convolve`: per-l matrix product in spectrum domain; 1e-12 residual (bead `d7v`).
+- `su2_fft_sphere` / `su2_fft_sphere_inv`: spherical-harmonic FFT on S^2; Y_0^0 synthesis 1e-13 (bead `5fb`).
+- `su2_wigner_d_half`: half-integer Wigner-d evaluation via de Moivre + tgamma; spin-1/2 closed forms at 1e-12 (bead `n8e`).
+- Arb path (`src/su2_fft_arb.c`): certified interval arithmetic at prec=512; worst-case ball radius 9.61e-154 at N=6.
+- Julia bindings (`julia/SU2FFT.jl`): ccall wrappers for all the above (bead `t6z`).
 
 ---
 

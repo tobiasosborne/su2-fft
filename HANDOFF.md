@@ -29,7 +29,7 @@ tar -xzf source.tar.gz
 Verify the baseline before starting any work:
 
 ```sh
-make test          # 49 tests, 9 binaries, ~5 s
+make test          # 58 tests, 10 binaries, ~5 s
 make bench         # cross-comparison + arb timing, ~3 s
 cd julia && julia --project=. -e 'using Pkg; Pkg.test()'   # 744 tests, ~8 s
 ```
@@ -49,6 +49,8 @@ Four implementations of the SU(2) FFT, plus three derived transforms:
 | `su2_fft_inv`         | Peter-Weyl synthesis (closed)     | O(N^4)        | shipped (bead `3lx`) |
 | `su2_fft_gl`          | forward with Gauss-Legendre theta | O(N^4)        | shipped (bead `ega`) |
 | `su2_fft_inv_gl`      | inverse at GL theta nodes         | O(N^4)        | shipped (bead `ega`) |
+| `su2_fft_resolved`    | forward, open P=2N-1 phi/psi + GL theta; exact roundtrip | O(N^4) | shipped (bead `0t1`) |
+| `su2_fft_resolved_inv`| inverse on resolved grid          | O(N^4)        | shipped (bead `0t1`) |
 | `su2_ft_direct_arb`   | arb (acb_t) direct reference      | brute O(N^6)  | shipped    |
 | `su2_fft_arb`         | arb fast                          | O(N^5) wigner | shipped (recurrence not yet ported — `2r2`) |
 | `su2_convolve`        | per-l matrix product in spectrum  | O(N^4)        | shipped (bead `d7v`) |
@@ -63,36 +65,46 @@ C row-major `f[j1*N*N + k*N + j2]` without any permutation.
 
 ---
 
-## 2. THE STRUCTURAL INSIGHT FROM THE LAST SESSION (READ THIS)
+## 2. THE CURRENT STATE OF PRECISION (READ THIS)
 
-**The closed-grid phi/psi aliasing is the dominant precision floor — not
-theta quadrature, not `pow()`.**  This was non-obvious; the previous-PROFILING
-data pointed at `pow()` (60-78 % of cycles), which made `dyi` look like an
-easy ~2x speedup.  Three iterations later, the actual story is:
+**Bead `0t1` shipped.  The phi/psi aliasing floor is eliminated in the
+resolved-grid path.**  Here is the full picture.
 
-- `m21` (Wigner recurrence) shifted the calling pattern so `pow()` was no
-  longer the bottleneck.  `dyi` (ipow) ended up a ~4 % wash because the
-  seed t-range collapsed to 1-2 terms post-m21.
-- `ega` (Gauss-Legendre theta) fixed the DC entry exactly
-  (forward(constant) = 1.0 instead of 1.31 at N=8).  But the leakage to
-  non-DC modes stayed at ~0.197.
-- Reason: the closed N-point grid in phi/psi resolves only ~N independent
-  modes via the FFTW + fold + `(-1)^{n+m}` phase trick, but the SU(2)
-  bandlimit demands |m|, |n| up to N-1 (= 2N-1 modes).  Modes with
-  |m| > N/2 alias.  Empirical at N=8:
-  - Constant-input leakage: ~0.197.
-  - Single-coefficient roundtrip at (l, 0, 0): max ~0.344 across l.
-  - Worst case at (l=N-1, m=±(N-1), 0): ~3.
+**What was wrong.**  The closed N-point grid in phi/psi resolved only `N-1`
+independent modes via the FFTW + fold + `(-1)^{n+m}` phase trick, but the SU(2)
+bandlimit demands `|m|, |n|` up to `N-1` (= 2N-1 modes).  Modes with
+`|m| > N/2` aliased.  Empirical at N=8 (GL theta path):
+- Constant-input leakage: ~0.197.
+- Single-coefficient roundtrip at (l, 0, 0): max ~0.344 across l.
+- Worst case at (l=N-1, m=±(N-1), 0): ~3.
 
-**This is bead `su2fft-0t1` (P1).**  Two structural fixes proposed:
-(a) widen the phi/psi grid to 2N-1 points (open or closed); or
-(b) restrict bandlimit to |m|, |n| < N/2.  Pick one, ship it, then the
-forward+inverse roundtrip will hit machine precision and the application
-beads (`d7v`, `5fb`) gain usable end-to-end accuracy.
+**What `0t1` did.**  `su2_fft_resolved` / `su2_fft_resolved_inv` use an open
+P=2N-1 point grid in phi and psi plus Gauss-Legendre theta nodes.  P=2N-1 is
+the exact minimum required to resolve all 2N-1 modes per axis without aliasing.
+No fold, no endpoint overcount.  Achieved tolerances (all from `make test`):
 
-**Synthesis is mathematically exact.**  All single-coefficient analytical
-tests hit 1e-12 to 1e-13.  The structural floor is in the FORWARD ANALYSIS
-under the current grid, not in the math.
+- Constant-input leakage (N=8): < 1e-12 (was ~0.197 -- eight orders of magnitude).
+- Spectrum roundtrip `forward(inverse(fhat)) = fhat` (max relative error):
+  - N=4:  9.39e-16
+  - N=8:  4.45e-15
+  - N=16: 5.89e-14
+- fast vs direct agreement (N=5: 3.27e-17, N=6: 1.47e-17).
+
+**What is still lossy.**  The original `su2_fft`, `su2_fft_inv`, `su2_fft_gl`,
+and `su2_fft_inv_gl` are unchanged.  They retain their existing precision floors
+and remain in the test suite as regression bounds, not as goals.  They are still
+useful for applications that trade precision for a smaller sample budget
+(`N^3` vs `(2N-1)^2 * N` samples).
+
+**The new structural insight.**  The forward analysis on the resolved grid is
+exact at working precision.  Spectrum roundtrip at N=8 is 4.45e-15 -- the limit
+is floating-point accumulation in the Wigner recurrence, not grid aliasing.  The
+next frontier is the arb-precision port (bead `su2fft-rrx`), which will deliver
+certified roundtrip at user-chosen precision (e.g. 256-bit -> roundtrip < 1e-70).
+`rrx` requires `acb_dft_prod` with `cyc={P,P}` (arbitrary-size DFT; confirmed
+in FLINT 3.0), `arb_hypgeom_legendre_p_ui_root` for arb GL nodes (confirmed in
+`/usr/include/flint/arb_hypgeom.h`), and the arb Wigner recurrence already in
+`src/su2_wigner_arb.c`.
 
 ---
 
@@ -129,8 +141,10 @@ in source comments at point of use.
    recurrence) is bead `u9q`.  `erv` (SO(3) FFT via Z_2 quotient) is blocked
    on `u9q`.
 
-7. **`(N/(N-1))^2` Riemann factor**, see §2.  GL theta (`ega`) eliminated
-   the theta part of this; the phi/psi part remains (bead `0t1`).
+7. **`(N/(N-1))^2` Riemann factor.**  GL theta (`ega`) eliminated the theta
+   part; the resolved grid (`0t1`) eliminates the phi/psi part.  Both factors
+   are gone in `su2_fft_resolved` / `su2_fft_resolved_inv`.  The closed-grid
+   paths retain their documented floors.
 
 8. **`pow()` is no longer the bottleneck.**  Post-`m21` + `dyi`, the seed
    calls account for ~46 % of N=24 wall but are dominated by trig
@@ -142,6 +156,13 @@ in source comments at point of use.
    `/lib/x86_64-linux-gnu/libgmp.so.10` with `RTLD_GLOBAL` then `dlopen`s
    libsu2 with `RTLD_DEEPBIND`.  Works on Debian/Ubuntu; portable fix is
    bead `e5z` (BinaryBuilder, libflint_jll, or static link).
+
+10. **Resolved grid (bead `0t1`): phi/psi at P=2N-1 OPEN samples, theta at N GL
+    nodes.**  Sample count `(2N-1)^2 * N`.  Index helper:
+    `su2_resolved_sample_index(N, j1, k, j2)` in `include/su2.h` (same axis
+    order as `su2_sample_index`; per-axis lengths differ).  Normalisation is
+    `1/(2 P^2)` with `P = 2N-1`, not `1/(2 N^2)`.  Coefficient layout
+    (`su2_total_coeffs`, `su2_coeff_offset`, `su2_mn_index`) is unchanged.
 
 ---
 
@@ -155,18 +176,24 @@ bd close <id> --reason "shipped in <hash>"
 bd dep tree <id>                  # see what's blocking or blocked
 ```
 
-**Recommended next move: `su2fft-0t1` (Fully resolved phi/psi grid).**
-This is the single biggest precision lift available.  Two design choices
-to pick from; recommend prototyping (a) — widen the grid to 2N-1 in phi/psi
-— since it preserves the existing bandlimit.  Touches `src/su2_fft.c`
-Stage 1 (FFTW plan dimensions, fold trick), `src/su2_fft_inv.c`,
-the `su2_total_coeffs` calculation may or may not change depending on
-which API choice you take.  Tests: replace the current "documented floor"
-testsets with strict 1e-12 roundtrip assertions.  Once it lands, run all
-existing tests; the analytical synthesis tests should still pass at
-machine precision because the synthesis is exact.
+**Recommended next move: `su2fft-rrx` (arb-precision resolved-grid roundtrip).**
+`0t1` is closed.  The double-precision resolved path achieves spectrum roundtrip
+4.45e-15 at N=8.  `rrx` extends this to user-chosen precision using FLINT arb:
 
-After `0t1`, the natural sequence is:
+- Stage 1: `acb_dft_prod(w, v, cyc={P,P}, num=2, prec)` — accepts arbitrary
+  `cyc[]`; for P=2N-1 FLINT routes through Bluestein/CRT internally.
+- Stage 2: existing `src/su2_wigner_arb.c` recurrence with `acb_t` accumulators.
+- GL nodes at arb precision: `arb_hypgeom_legendre_p_ui_root(res, weight, n, k,
+  prec)` (FLINT 3.0+, confirmed in `/usr/include/flint/arb_hypgeom.h`) returns
+  both the k-th root of P_n and its GL weight; no manual Newton iteration needed.
+- Norm: `1/(2 P^2)` in arb arithmetic; trivially computed.
+- Cross-check: arb resolved vs double resolved at prec=53 should agree to 1e-13;
+  spectrum roundtrip at prec=256 should hit < 1e-70.
+
+The design brief is in `notes/0t1_resolved_grid_design.md §8`.  Estimated 200-400
+LOC (mirrors `src/su2_fft_arb.c` but with `cyc={P,P}` and arb GL nodes).
+
+After `rrx`, the natural sequence is:
 1. `cvh` (SIMD inner product) — perf, the inner-product is ~11 % of wall;
    AVX2 should ~3x it.
 2. `lg8` (OpenMP over outer (l, m, n) loop) — perf, near-linear on 8 cores.
@@ -192,6 +219,7 @@ After `0t1`, the natural sequence is:
 | `n8e`-1 | Half-integer Wigner-d evaluation              | `notes/half_integer.md`                 |
 | `d7v`   | SU(2) convolution via spectrum                | `src/su2_convolve.c` header             |
 | `5fb`   | Spherical FFT on S^2 (thin wrapper)           | `src/su2_sphere.c` header               |
+| `0t1`   | Resolved-grid FFT (open P=2N-1 phi/psi + GL theta; exact spectrum roundtrip 4.45e-15 at N=8) | `notes/0t1_resolved_grid_design.md` |
 
 The `notes/` design briefs are gold — they contain the math derivations,
 the failure modes that were caught during research, and the implementation
@@ -292,6 +320,14 @@ These cost time when you don't know them.
    sync to the Dolt remote before the source-code push, otherwise next
    session sees an inconsistent state.
 
+7. **The 'closed-grid aliasing' framing was correct; the fix was exactly as
+   predicted.**  The previous HANDOFF said "widen phi/psi to 2N-1" would fix
+   the O(1) spectrum roundtrip error.  That is exactly what `0t1` did, and
+   the result was exactly as predicted (4.45e-15 at N=8 vs 0.197 leakage).
+   Some pre-existing tests on the lossy closed-grid paths still pass with
+   documented-floor tolerances (e.g. `test_roundtrip_spectrum` at rel_err ~5.6);
+   they remain in the suite as regression bounds, not as goals.
+
 ---
 
 ## 10. Where the user is reachable for ambiguities
@@ -301,6 +337,6 @@ For paper-math disambiguation, the paper itself plus the four notes/
 summaries give independent renderings of every key formula.  When the
 paper and a note disagree, the paper is canonical.
 
-Welcome aboard.  The biggest single lift available right now is `0t1` —
-ship that, the application beads gain usable precision, and the rest of
-the roadmap becomes more useful in practice.
+Welcome aboard.  `0t1` shipped; the spectrum roundtrip is now exact at working
+precision.  The biggest single remaining lift is `rrx` (arb-precision resolved
+grid) — see §4 for what it needs and §2 for the precision context.

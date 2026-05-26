@@ -23,9 +23,10 @@ May 2026) or to a deliberate departure from it, which is called out explicitly.
 | `src/su2_wigner.c`                   | Stable evaluation of paper's P^l_{n,m}(cos theta).                  |
 | `src/su2_ft.c`                       | Direct O(N^6) reference Fourier transform.                          |
 | `src/su2_fft.c`                      | O(N^4) fast FFT (double, forward `su2_fft` + inverse `su2_fft_inv`). |
+| `src/su2_fft_resolved.c`             | Resolved-grid FFT (`su2_fft_resolved` + `su2_fft_resolved_inv`): open P=2N-1 phi/psi + GL theta; exact spectrum roundtrip (bead `su2fft-0t1`). |
 | `src/su2_convolve.c`                 | Spectral convolution via per-l matrix product, O(N^4) (bead `su2fft-d7v`). |
 | `include/su2_arb.h`, `src/su2_*_arb.c` | FLINT arb/acb arbitrary-precision parallel path.                  |
-| `tests/test_*.c`                     | Red/green TDD checks for each piece.                                |
+| `tests/test_*.c`                     | Red/green TDD checks for each piece.  `tests/test_resolved.c` covers the resolved-grid path (9 testsets, §3.7). |
 | `bench/compare.c`                    | Cross-comparison and timing across N.                               |
 | `bench/vis_dump.c` + `visualize.py`  | Spectrum visualisation (paper Figure 1 style).                      |
 | `bench/arb_bench.c`                  | Arb-precision timing vs ball radius at prec = 53/128/256/512.       |
@@ -338,7 +339,8 @@ Seven tests for the closed-grid path, all passing; plus six GL testsets added
 by bead `ega` (see §3.6).  The C suite stood at 34 tests after `ega` (was 18
 before `test_roundtrip`; grew to 25 with 3lx; to 34 with ega); bead `n8e`
 Tier 1 added 4 more to reach 38; bead `d7v` added 5 more to reach 43; bead
-`5fb` added 6 more to reach the current 49 (see §5.1, §5.2, §5.3).
+`5fb` added 6 more to reach 49 (see §5.1, §5.2, §5.3); bead `0t1` added 9
+more to reach the current 58 (see §3.7).
 
 | test                        | what it checks                            | residual     |
 |-----------------------------|-------------------------------------------|--------------|
@@ -427,11 +429,11 @@ basic properties, degree exactness to 2N-1, N=4 analytical).
 single-coefficient analytical, linearity, single-coefficient floor).
 Total: 34/34 C tests pass (was 28); 274/274 Julia tests pass (was 211).
 
-### Residual phi/psi aliasing (bead `su2fft-0t1`)
+### Residual phi/psi aliasing in `su2_fft_gl` (documented floor)
 
 The GL quadrature fixes the theta integration.  A separate aliasing error
 remains in the phi/psi Stage 1 that the GL theta nodes do not address.  At
-N=8 GL:
+N=8 GL (`su2_fft_gl` / `su2_fft_inv_gl`):
 
 - `forward(constant)` leakage to non-DC coefficients: max ~0.197.
 - Single-coefficient roundtrip `forward(inverse(e_{l,0,0}))` at l in [0, N-1]:
@@ -445,13 +447,136 @@ half-shift but does not eliminate aliasing for modes with `|m|` or `|n|` near
 independent frequencies) but the closed N-point grid resolves only `~N` modes.
 For low `|m|, |n|` the error is small; near `N-1` it is O(1).
 
-**Path to exact roundtrip.**  Bead `su2fft-0t1` (P1) tracks the structural
-fix.  Two options: (a) use a `2N-1` point grid in phi/psi (resolving all
-required modes), or (b) restrict the bandlimit to `|m|, |n| < N/2`.  Until
-`su2fft-0t1` lands, the GL pair gives exact DC and exact low-mode coefficients
-but the spectrum roundtrip at high `|m|, |n|` remains O(1) error.  Application
-beads `su2fft-d7v`, `su2fft-31x`, and `su2fft-5fb` formally unblocked by
-`3lx` wait on `0t1` for practical precision.
+**Fix: bead `su2fft-0t1` (shipped).**  The `su2_fft_resolved` path (§3.7)
+uses a `2N-1`-point open grid in phi/psi, eliminating the aliasing.  The GL
+pair (`su2_fft_gl`, `su2_fft_inv_gl`) retains the documented ~0.197 floor and
+remains available for applications that accept lower precision in exchange for
+a smaller sample budget (`N^3` vs `(2N-1)^2 * N`).  Application beads
+`su2fft-d7v`, `su2fft-31x`, and `su2fft-5fb` formally unblocked by `3lx`
+gain usable end-to-end accuracy via the resolved path.
+
+---
+
+## 3.7 Resolved grid -- eliminating the phi/psi aliasing (bead `su2fft-0t1`)
+
+Bead `su2fft-0t1` shipped `su2_fft_resolved` and `su2_fft_resolved_inv` in
+`src/su2_fft_resolved.c`.  These functions replace the closed N-point phi/psi
+grid with an open (2N-1)-point grid, eliminating the structural aliasing that
+capped spectrum roundtrip accuracy at O(1) relative error.
+
+### Why the closed grid aliases
+
+The closed N-point grid in phi and psi resolves `N-1` independent Fourier modes
+per axis (the fold trick produces an `(N-1) x (N-1)` FFTW plan; see §2.2).
+The SU(2) bandlimit at degree N requires modes `|m|, |n| <= N-1`, meaning
+`2N-1` distinct modes per axis.  Any mode with `|m|` or `|n|` above `~(N-1)/2`
+aliases onto a lower mode in the `(N-1)`-bin DFT output.  For low `|m|, |n|`
+the error is small; near the bandlimit it is O(1).
+
+Empirical confirmation at N=8 (GL theta path): forward(constant) leaks ~0.197
+to non-DC coefficients; single-coefficient roundtrip at `(l=N-1, m=±(N-1), 0)`
+yields error ~3.
+
+The modes-vs-bins arithmetic: P = N-1 bins (after fold), 2N-1 required modes.
+Mode `n` maps to bin `n mod (N-1)`.  Modes `n` and `n + (N-1)` share a bin and
+alias: the fold does not distinguish them.
+
+### The P = 2N-1 open grid (design doc §2)
+
+For a trig polynomial of degree `L`, the uniform DFT on `P` samples is exact
+iff `P >= 2L+1` (DFT orthogonality on the unit roots; Trefethen §12).
+Bandlimit `N` requires `L = N-1`, giving minimum `P = 2N-1`.
+
+The resolved grid uses the **open** uniform grid with `P = 2N-1` samples:
+
+```
+phi[j] = -pi + j * 2*pi/P,   j in [0, P-1],   P = 2N-1
+```
+
+No endpoint duplication; no fold trick.  The `-pi` origin shift produces a
+`(-1)^n` phase per mode, which is applied as a scalar multiply after the FFTW
+call.  Mode `n in [-(N-1), N-1]` maps to FFTW output bin `n mod P`, and since
+the range has exactly `P = 2N-1` elements these bins are all distinct.  No
+alias.
+
+### Stage 1 differences (no fold; direct P x P FFTW)
+
+For each theta slice `k in [0, N-1]` (GL nodes; see §3.6):
+1. Load the `(P x P)` sample slice into an FFTW buffer.
+2. Run a `(P x P)` FFTW BACKWARD plan (sign +1; identical sign convention to
+   the closed-grid path).
+3. For each output mode `(n, m) in [-(N-1), N-1]^2`, apply the `(-1)^n * (-1)^m`
+   origin-shift phase and store in `F2[k, n, m]`:
+
+```
+F2[k, n, m] = (-1)^n * (-1)^m * G_slice[n mod P, m mod P]
+```
+
+No fold, no endpoint summation.  The `(P x P)` plan size is typically prime or
+near-prime (e.g. P=7, 9, 11, 15, 17, 23, 31 for N=4..16); FFTW routes through
+Rader/Bluestein internally with O(P log P) cost.
+
+Stage 2 (GL inner product for each (l, m, n)) is unchanged from `su2_fft_gl`;
+the `i^{n-m}` phase, `su2_wigner_d_seq` recurrence, and GL weight `w_k`
+absorption are identical.
+
+### Norm = 1/(2 P^2) derivation
+
+The constant-input test anchors the normalisation.  With `f = 1` everywhere,
+Stage 1 FFTW BACKWARD output at bin `(0, 0)` gives `G_slice[0, 0] = P * P`
+(sum of `P^2` unit inputs).  The `(-1)^0 * (-1)^0 = 1` phase leaves
+`F2[k, 0, 0] = P^2` for all `k`.  Stage 2 for `(l=0, m=0, n=0)`:
+
+```
+fhat(0)_{0,0} = norm * sum_k w_k * d^0_{0,0}(theta_k) * F2[k, 0, 0]
+             = norm * P^2 * sum_k w_k * 1
+             = norm * P^2 * 2          (GL weights sum to 2)
+```
+
+Setting this equal to 1 (the Peter-Weyl value for a unit constant function):
+
+```
+norm_resolved = 1 / (2 * P^2),   P = 2N-1
+```
+
+Compare `norm_gl = 1 / (2 * N^2)` in the closed-grid GL path (§3.6): the
+only change is `N -> P = 2N-1` in the denominator, reflecting the larger FFTW
+plan size.  This derivation is cited in the source comment in
+`src/su2_fft_resolved.c`.
+
+### Cross-check results
+
+`make test` passes 58/58 tests (10 binaries).  Resolved-grid tests
+(`tests/test_resolved.c`):
+
+**fast vs direct agreement (`test_resolved_fft_matches_direct_random`):**
+
+| N | max abs error |
+|---|---------------|
+| 5 | 3.27e-17      |
+| 6 | 1.47e-17      |
+
+Both within a few ULPs of double precision.
+
+**spectrum roundtrip `forward(inverse(fhat)) = fhat`
+(`test_resolved_spectrum_roundtrip`):**
+
+| N  | su2_total_coeffs(N) | max relative error |
+|----|---------------------|--------------------|
+|  4 | 84                  | 9.39e-16           |
+|  8 | 680                 | 4.45e-15           |
+| 16 | 5984                | 5.89e-14           |
+
+The N=16 figure is slightly larger than N=4–8 due to accumulated floating-point
+error across `su2_total_coeffs(16) = 5984` coefficients (vs 84 at N=4); it
+remains 11 orders of magnitude below the closed-grid baseline (~0.197).
+
+**constant-input leakage (`test_resolved_constant_forward`, N=8):**
+max coefficient error < 1e-12, down from ~0.197 on the closed-grid GL path --
+a reduction of more than eight orders of magnitude.
+
+The full test log and per-test tolerances are in
+`notes/0t1_resolved_grid_design.md §10`.
 
 ---
 
