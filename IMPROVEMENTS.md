@@ -18,15 +18,33 @@ N=24 vs the O(N^6) direct path.  Max-diff at N=24: 2.21e-13 (well within
 1e-10 tolerance; recurrence accumulates floating-point error over l, which
 is expected and acceptable).  See `ALGORITHM.md §2.3` and `PROFILING.md`.
 
-### 1. Integer-power tables in place of `pow()` inside the seed (de Moivre sum)
+### ~~1. Integer-power tables in place of `pow()` inside the seed~~ — DONE (dyi)
 
-**Impact: ~3× on the seed budget (46% of N=24 wall).**  Inside `wigner_d_phys`
-the exponents `pc`, `ps` are small non-negative integers ≤ 2l_min ≤ 2N.
-Precompute `c2^k`, `s2^k` for `k = 0..2l_min` once per call (length 2l_min+1,
-Horner-built in 2l_min mults), then the t-loop is two table lookups per term.
-This eliminates all `pow()` calls from the seed path.
+Shipped in bead `su2fft-dyi` as inline `ipow(double x, int k)` (repeated
+squaring, ⌈log₂(k)⌉ ≈ 5–6 mults for k ≤ 50).  A first attempt with full
+Horner tables `c2_pow[0..2l]` was a wash — ~48-entry tables to access ~2–3
+entries per de Moivre term.  The shipped `ipow` gives ~4% wall improvement at
+N=24 (warm-run mean ~103x vs ~91x on `bench/compare`; per-FFT wall 34.3 ms →
+~33.0 ms on `build/profile_stages 24 10`).  Seed % at N=24 is unchanged at
+46%: post-m21 the `pow()` cost was already small relative to trig.  Code is
+strictly cleaner regardless of the modest gain.
 
-Touches: `src/su2_wigner.c`.
+**The seed path is now trig-dominated** (`cos(beta/2)` + `sin(beta/2)` per
+seed call), not `pow()`-dominated.  The next lever is trig-sharing (item 1b
+below).
+
+### 1b. Share trig across the seed pair and across (m, n) at fixed k (su2fft-xxb)
+
+**Impact: ~10% reduction in seed cost (~3 ms at N=24).**  Both seed calls at
+a (m, n, k) triple share the same `theta_k`, yet each call independently
+evaluates `cos(theta_k/2)` and `sin(theta_k/2)`.  Across all (m, n) at fixed
+k, the same theta_k recurs O(N^2) times.  Precomputing the trig pair once per
+k and passing `(c2, s2)` into `wigner_d_phys` avoids O(N^2) duplicate
+`cos`/`sin` calls per k-slice.
+
+Touches: `src/su2_wigner.c` (add `wigner_d_phys_trig` variant accepting
+precomputed c2, s2), `src/su2_fft.c` Stage 2 (hoist trig out of (m, n)
+loops).
 
 ### 2. Recurrence-coefficient caching across k
 
@@ -192,11 +210,13 @@ Touches: new `tests/fuzz.c`; CI hookup.
 
 ## Headline summary
 
-Item 1 of the original list (three-term recurrence) shipped as bead `su2fft-m21`,
-delivering 90.91x speedup at N=24 and bringing the implementation to the paper's
-O(N^4) asymptotic.  If we now ship items **1, 2, 3, 4, 7, 14** (renumbered above)
-the codebase goes from "honest O(N^4) implementation that matches the paper" to
-"the obvious tool you reach for if you need an SU(2) FFT".  Items 1–4 alone should
-bring N=24 from ~20 ms to an estimated < 5 ms per FFT; item 14 (Python bindings)
-is what turns the project from a curiosity into something a researcher actually
-depends on.
+Bead `su2fft-m21` (three-term recurrence) delivered 90.91x speedup at N=24 and
+the paper's O(N^4) asymptotic.  Bead `su2fft-dyi` (inline `ipow`) added a
+modest ~4% wall improvement; the `pow()` cost was already small post-m21 and
+the seed is now trig-dominated.  If we now ship items **1b, 2, 3, 4, 7, 14**
+(renumbered above: trig-sharing, recurrence-coefficient caching, OpenMP, SIMD,
+inverse FFT, Python bindings) the codebase goes from "honest O(N^4)
+implementation that matches the paper" to "the obvious tool you reach for if
+you need an SU(2) FFT".  Items 1b–4 together should bring N=24 well below 30 ms
+per FFT; item 14 (Python bindings) is what turns the project from a curiosity
+into something a researcher actually depends on.

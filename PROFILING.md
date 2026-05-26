@@ -95,12 +95,21 @@ Post-m21, `wigner_d_phys` is called only for the **seed** values (`l = l_min`
 and `l = l_min + 1`) at each (m, n, k) triple, not for every l.  The stage
 profile shows this as 46.09% of N=24 wall in `wigner seed` — two calls per
 (m, n, k) across O(N^3) triples with O(1) de Moivre terms each at the base.
-Replacing the two `pow()` calls with integer-power tables (IMPROVEMENTS.md item 1)
-is now the dominant remaining lever on the seed budget.
 
-The exponents are small integers ≤ 2l_min ≤ 2N — so libm `pow(base, double)`
-is massively overkill: an integer-power computation by repeated squaring needs
-only ⌈log₂(pc)⌉ ≈ 5 mults instead of one transcendental.
+**Bead `su2fft-dyi` shipped** (inline `ipow(double x, int k)` via repeated
+squaring, ⌈log₂(k)⌉ ≈ 5–6 mults for k ≤ 50).  This replaces the libm
+`pow(c2, pc) * pow(s2, ps)` calls in `wigner_d_phys` with integer arithmetic.
+Empirical improvement at N=24: `bench/compare` ~91x → ~100–108x (run-to-run
+variance ~15%, mean of warm runs near 103x); `build/profile_stages 24 10`
+per-FFT wall 34.3 ms → ~33.0 ms (~4%, within the noise floor).  Seed % at
+N=24 remained 46.1% — unchanged — because the seed cost is now dominated by
+`cos(beta/2)` and `sin(beta/2)`, not `pow()`.
+
+The dominant remaining cost in `wigner_d_phys` is the trig pair
+`cos(beta/2)` + `sin(beta/2)` (one pair per seed call, two per (m, n, k)
+triple, with the same theta across pairs and across all (m, n) at fixed k).
+Sharing that trig across the seed pair — and possibly across all (m, n) at
+fixed k — is the next lever; see bead `su2fft-xxb`.
 
 ---
 
@@ -144,12 +153,21 @@ remains well within the 1e-10 cross-check tolerance.
 1. ~~**Three-term recurrence in `l` for the Wigner kernel.**~~  **DONE (m21).**
    Stage 2 is now O(N^4).  90.91x speedup at N=24.
 
-2. **Integer-power tables in place of `pow()` inside the seed (de Moivre sum).**
-   The seed accounts for 46% of N=24 wall.  Inside `wigner_d_phys` the exponents
-   `pc`, `ps` are small non-negative integers ≤ 2l_min.  Precomputing `c2^k`,
-   `s2^k` for `k = 0..2l_min` (Horner-built once per call) eliminates the
-   transcendentals.  Expected ~3x on the seed budget.
-   Touches: `src/su2_wigner.c`.
+2. ~~**Integer-power tables in place of `pow()` inside the seed.**~~
+   **DONE (dyi).**  Shipped as inline `ipow` (repeated squaring).  A first
+   attempt with full Horner tables `c2_pow[0..2l]` was a wash — tables of
+   ~48 entries to access ~2–3 of them.  The shipped `ipow` gives ~4% wall
+   improvement at N=24 (within noise; cleaner code regardless).  Seed % is
+   unchanged at 46%: `pow()` was already not the dominant cost post-m21.
+   The seed is now trig-dominated; see item 2b below.
+
+2b. **Share trig across the seed pair and across (m, n) at fixed k** (bead
+   `su2fft-xxb`).  `cos(beta/2)` and `sin(beta/2)` are called once per seed
+   invocation; both seeds at a (m, n, k) triple share the same theta_k, so
+   two identical trig evaluations can become one.  Across all (m, n) at fixed
+   k the same theta_k recurs O(N^2) times — sharing it is O(N^2) saved trig
+   calls per k.  Expected ~10% reduction in seed cost (~3 ms at N=24).
+   Touches: `src/su2_wigner.c`, `src/su2_fft.c`.
 
 3. **Recurrence-coefficient caching across k.**  `Ak`, `Bk`, `Ck`, `F1`, `F2`
    in the §2b recurrence depend on `(l, m, n)` but not on `theta`.  Precomputing

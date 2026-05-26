@@ -59,9 +59,26 @@ static double _Complex pow_i(int k)
     }
 }
 
+/* Repeated-squaring integer power: O(log2 k) mults, no libm calls.
+ * pow(0, 0) = 1.0 convention preserved by initialising result to 1.0
+ * (consistent with the theta=0 / theta=pi endpoint behaviour that
+ * existing tests rely on; see HANDOFF.md §2 item 4). */
+static inline double ipow(double x, int k)
+{
+    double r = 1.0;
+    while (k > 0) {
+        if (k & 1) r *= x;
+        x *= x;
+        k >>= 1;
+    }
+    return r;
+}
+
 /* Physics-convention real Wigner small-d d^l_{n,m}(beta) (Sakurai). */
 static double wigner_d_phys(int l, int n, int m, double beta)
 {
+    assert(l <= FACT_MAX);
+
     int tmin = (m - n > 0) ? (m - n) : 0;
     int tmax = (l + m < l - n) ? (l + m) : (l - n);
     if (tmin > tmax) return 0.0;
@@ -70,6 +87,11 @@ static double wigner_d_phys(int l, int n, int m, double beta)
     double s2 = sin(beta * 0.5);
     double norm = sqrt(fact(l + n) * fact(l - n) * fact(l + m) * fact(l - m));
 
+    /* Integer powers via repeated squaring (bead su2fft-dyi).  Replaces
+     * two libm pow() calls per term with O(log2(2l)) mults each.  The
+     * post-m21 calling pattern is seeds only (l = l_min, l_min+1), where
+     * the t-range collapses to 1-2 terms — Horner tables over-build by
+     * ~20x, so inline ipow is the right primitive. */
     double sum = 0.0;
     for (int t = tmin; t <= tmax; ++t) {
         double sign  = ((n - m + t) & 1) ? -1.0 : 1.0;
@@ -77,7 +99,7 @@ static double wigner_d_phys(int l, int n, int m, double beta)
                      * fact(n - m + t) * fact(l - n - t);
         int    pc    = 2*l + m - n - 2*t;
         int    ps    = n - m + 2*t;
-        sum += sign * norm / denom * pow(c2, (double)pc) * pow(s2, (double)ps);
+        sum += sign * norm / denom * ipow(c2, pc) * ipow(s2, ps);
     }
     return sum;
 }

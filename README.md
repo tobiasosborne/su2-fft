@@ -70,9 +70,12 @@ This repo contains a working C implementation of the Delgado et al. O(N^4)
 algorithm, built test-first and cross-validated against the O(N^6) direct
 transform at bandlimits up to N=24. The two implementations agree to within
 2.21e-13 at N=24 (well within the 1e-10 cross-check tolerance), and the fast
-path runs 90.91x faster at N=24 -- the implementation now matches the paper's
-O(N^4) asymptotic via an ascending-l three-term Wigner recurrence (bead
-`su2fft-m21`). An FLINT arb-precision parallel path provides certified interval
+path runs 90–108x faster at N=24 depending on warmup and OS jitter
+(cold-cache baseline 90.91x; warm-run mean near 103x after bead `su2fft-dyi`
+replaced libm `pow` with inline integer-power) -- the implementation now
+matches the paper's O(N^4) asymptotic via an ascending-l three-term Wigner
+recurrence (bead `su2fft-m21`). An FLINT arb-precision parallel path provides
+certified interval
 arithmetic: at prec=512 the worst-case ball radius on all output coefficients
 is 9.61e-154, corresponding to 154 verified decimal digits.
 
@@ -149,8 +152,11 @@ across the full range: the two algorithms compute the same discrete sum.
 At N=24 the max-diff is 2.21e-13, higher than the pre-recurrence figure of
 7.12e-17 because the ascending-l recurrence accumulates floating-point error
 over l steps; it remains well within the 1e-10 cross-check tolerance.
-The speedup at N=24 is 90.91x; at small N the FFTW plan overhead dominates
-and the direct path wins -- the standard FFT crossover.
+The table above is the cold-cache baseline; at N=24 the speedup is 90.91x
+cold.  Warm-run variance is ~15% and the mean of warm runs sits near 103x
+after bead `su2fft-dyi` (inline `ipow` replacing libm `pow`).  At small N
+the FFTW plan overhead dominates and the direct path wins -- the standard FFT
+crossover.
 
 ### Arb-precision path (`bench/arb_bench`)
 

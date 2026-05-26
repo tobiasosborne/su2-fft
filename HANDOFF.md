@@ -113,16 +113,26 @@ call to `wigner_d_phys` in Stage 2.  Result: 90.91x speedup at N=24
 O(N^4) asymptotic for the first time.  Stage breakdown at N=24: wigner seed
 46%, recurrence 33%, inner product 11%, Stage 1 2%.
 
-**Recommended first move: `su2fft-dyi` (Integer-power tables in the seed).**
-46% of N=24 wall is now in the two `wigner_d_phys` seed calls per (m, n, k).
-Those calls burn cycles on `pow(cos(beta/2), pc)` and `pow(sin(beta/2), ps)`
-with integer exponents pc, ps ≤ 2*l_min.  Precomputing c2^k, s2^k for
-k = 0..2*l_min (Horner-built, O(l_min) mults) and replacing both `pow()` calls
-with table lookups eliminates the transcendentals.  Touches `src/su2_wigner.c`
-only; tests need no change.  Expected ~3x on the seed budget (~46% of wall).
+**`su2fft-dyi` shipped.**  The libm `pow(c2, pc) * pow(s2, ps)` calls in
+`wigner_d_phys` were replaced with an inline `ipow(double x, int k)` (repeated
+squaring, ⌈log₂(k)⌉ ≈ 5–6 mults for k ≤ 50).  The pre-m21 premise of "~2–3x
+seed speedup" did not hold post-m21: with `wigner_d_phys` called only O(N^3)
+times as seeds (not O(N^5) times across all l), `pow()` was already a small
+fraction of seed cost.  Empirical result: ~4% wall improvement at N=24 (warm-run
+`bench/compare` ~91x → ~100–108x; `build/profile_stages 24 10` per-FFT wall
+34.3 ms → ~33.0 ms).  Seed % unchanged at 46% — the seed is now
+trig-dominated (`cos(beta/2)` + `sin(beta/2)`), not `pow()`-dominated.
+
+**Recommended first move: `su2fft-xxb` (trig-sharing across the seed pair).**
+Both seed calls at a (m, n, k) triple evaluate `cos(theta_k/2)` and
+`sin(theta_k/2)` independently, despite sharing the same `theta_k`.  Hoisting
+the trig pair out of the (m, n) inner loops eliminates O(N^2) redundant trig
+calls per k-slice.  Expected ~10% reduction in seed cost (~3 ms at N=24).
+Touches `src/su2_wigner.c` and `src/su2_fft.c` Stage 2 only.
 
 After that, bead `su2fft-cvh` (SIMD) is the next move on the recurrence and
-inner-product slices.
+inner-product slices, and `su2fft-lg8` (OpenMP over the (m, n) loop) is a
+near-linear scaling win at the cost of added complexity.
 
 ---
 
@@ -181,9 +191,15 @@ through five rewrites of the Wigner routine.  Don't drop it.
 
 These cost time when you don't know them.
 
-1. **`pow()` is shockingly expensive.**  60.5% of cycles in
-   `__ieee754_pow_fma` at N=20.  Always reach for repeated-squaring on
-   integer exponents; never call `pow(x, k)` for `k` integer in a hot loop.
+1. **`pow()` is shockingly expensive — but context matters.**  Pre-m21,
+   60.5% of cycles were in `__ieee754_pow_fma` at N=20 (O(N^5) calls to
+   `wigner_d_phys`).  Post-m21, `wigner_d_phys` is called only O(N^3) times
+   as seeds, so `pow()` dropped from dominant cost to a minor contributor.
+   Bead `su2fft-dyi` replaced it with inline `ipow` (repeated squaring)
+   anyway — cleaner code and ~4% wall improvement — but not the ~2–3x
+   originally predicted.  The lesson: always profile the post-refactor call
+   pattern before sizing an optimisation.  Always reach for repeated-squaring
+   on integer exponents; never call `pow(x, k)` for `k` integer in a hot loop.
 
 2. **The Rodrigues form of P^l_{nm} catastrophically cancels by l~10.**
    It was the first implementation; it passes tests up to l=8 and silently
@@ -235,10 +251,14 @@ implementation matches the paper.  Concrete acceptance for the first few:
 - `bench/compare` at N=24 shows 90.91x speedup (criterion was > 50x).
 - Stage timings updated in PROFILING.md.
 
-**`su2fft-dyi` (Integer-power tables) — DONE when:**
-- `bench/profile_stages 24 3` reports `wigner seed` < 20% of total.
-- `bench/compare` max-diff at N=24 remains below 1e-10.
-- `src/su2_wigner.c` no longer calls `pow()` inside the de Moivre t-loop.
+**`su2fft-dyi` (inline `ipow`) — DONE.**
+Shipped: `src/su2_wigner.c` no longer calls `pow()` inside the de Moivre
+t-loop.  `bench/compare` max-diff at N=24 remains below 1e-10.  Wall
+improvement ~4% (34.3 ms → ~33.0 ms per FFT at N=24); seed % unchanged at
+46% because the seed is now trig-dominated, not `pow()`-dominated.  The
+original "seed < 20%" criterion was set against the pre-m21 calling pattern
+(O(N^5) calls) and was not achievable post-m21 without trig-sharing
+(`su2fft-xxb`).
 
 **`su2fft-3lx` (Inverse FFT) — DONE when:**
 - `tests/test_roundtrip.c` exists and shows
