@@ -22,6 +22,34 @@
  *       - test_roundtrip_spectrum_riemann_tolerance
  *       - test_roundtrip_spectrum_low_l_subspace
  *       - test_roundtrip_sample_bandlimited
+ *
+ *   (C) Gauss-Legendre theta variant tests (bead `su2fft-ega`).
+ *       The GL substitution x = cos(theta) replaces the closed-grid Riemann
+ *       sum in theta with an N-point Gauss-Legendre quadrature.  This fixes
+ *       the (N/(N-1))^2 closed-grid theta factor at the (l=0, m=n=0) entry
+ *       EXACTLY (see notes/gauss_legendre.md §1 and §6).  However, the
+ *       closed-grid phi/psi aliasing (the (-1)^{n+m} fold trick aliasing
+ *       endpoint contributions) is a SEPARATE defect tracked by bead
+ *       `su2fft-0t1`; this still produces O(0.2) leakage in the full
+ *       spectrum roundtrip even after the GL substitution.
+ *
+ *       The analytical synthesis tests (constant_input_exact,
+ *       single_coefficient_l0_exact, inv_delta_l1_m0_n0_at_gl_nodes,
+ *       inv_linearity) hit 1e-12 because synthesis is pure linear algebra
+ *       on the (correct, exact) Wigner-d values; the GL improvement at
+ *       DC is verifiable to machine precision.
+ *
+ *       The "floor" tests (constant_input_leakage, single_coefficient_floor)
+ *       document the empirical residual from the phi/psi aliasing as a
+ *       regression bound, NOT zero.  Tightening these requires the 2N-1
+ *       phi/psi grid fix in bead `su2fft-0t1`.
+ *
+ *       - test_gl_constant_input_exact
+ *       - test_gl_constant_input_leakage
+ *       - test_gl_single_coefficient_l0_exact
+ *       - test_gl_single_coefficient_floor
+ *       - test_gl_inv_linearity
+ *       - test_gl_inv_delta_l1_m0_n0_gives_3cos_theta_at_gl_nodes
  */
 #include "test_framework.h"
 #include "su2.h"
@@ -340,6 +368,205 @@ static void test_roundtrip_sample_bandlimited(void)
     }
 }
 
+/* ===========================================================================
+ * (C) Gauss-Legendre theta variant tests (bead `su2fft-ega`).
+ *
+ * See notes/gauss_legendre.md for the substitution and normalisation
+ * derivation.  The GL theta nodes fix the closed-grid (N/(N-1))^2 factor
+ * at the DC entry; the phi/psi closed-grid aliasing (bead `su2fft-0t1`)
+ * is a SEPARATE defect that still produces O(0.2) leakage in the
+ * non-DC coefficients.
+ * =========================================================================== */
+
+/* forward_gl(constant 1) gives fhat(0,0,0) = 1.0 to floating-point noise.
+ * This is the headline GL improvement over the closed-grid forward, which
+ * gives (N/(N-1))^2 = 1.31 at N=8 (see test_inv_delta_l0_gives_constant for
+ * the closed-grid baseline).  Verified at N = 4, 6, 8, 16.
+ * Reference: notes/gauss_legendre.md §1 and §6 (norm = 1/(2 N^2)). */
+static void test_gl_constant_input_exact(void)
+{
+    int Ns[] = { 4, 6, 8, 16 };
+    for (int idx = 0; idx < 4; ++idx) {
+        int N = Ns[idx];
+        size_t nsamp  = (size_t)N * N * N;
+        size_t ncoeff = su2_total_coeffs(N);
+        double _Complex *f    = malloc(nsamp  * sizeof(double _Complex));
+        double _Complex *fhat = calloc(ncoeff, sizeof(double _Complex));
+        for (size_t i = 0; i < nsamp; ++i) f[i] = 1.0 + 0.0 * I;
+        su2_fft_gl(N, f, fhat);
+        ASSERT_CNEAR(fhat[0], 1.0 + 0.0 * I, 1e-13);
+        free(f); free(fhat);
+    }
+}
+
+/* forward_gl(constant 1) has bounded leakage into the non-DC coefficients.
+ *
+ * The closed-grid phi/psi fold (the (-1)^{n+m} aliasing trick used in
+ * Stage 1) still over-counts endpoint contributions, so a constant f=1
+ * input produces nonzero coefficients at (l>0) or (m,n != 0) entries with
+ * magnitudes ~0.2 at N=8.  This test BOUNDS the leakage as a regression
+ * guard, NOT zero.
+ *
+ * The structural fix (2N-1 phi/psi grid removing the fold) is bead
+ * `su2fft-0t1`.  Once that lands this tolerance should be tightened. */
+static void test_gl_constant_input_leakage(void)
+{
+    int N = 8;
+    size_t nsamp  = (size_t)N * N * N;
+    size_t ncoeff = su2_total_coeffs(N);
+    double _Complex *f    = malloc(nsamp  * sizeof(double _Complex));
+    double _Complex *fhat = calloc(ncoeff, sizeof(double _Complex));
+    for (size_t i = 0; i < nsamp; ++i) f[i] = 1.0 + 0.0 * I;
+    su2_fft_gl(N, f, fhat);
+
+    double max_leak = 0.0;
+    for (size_t i = 1; i < ncoeff; ++i) {  /* skip i=0 (the DC entry) */
+        double a = cabs(fhat[i]);
+        if (a > max_leak) max_leak = a;
+    }
+    printf("    [gl const-input leakage] N=%d max_leak=%.4e (assert < 0.30)\n",
+           N, max_leak);
+    fflush(stdout);
+
+    /* Empirical ~0.197 at N=8; assert < 0.3 as a regression bound. */
+    ASSERT_TRUE(max_leak < 0.3);
+
+    free(f); free(fhat);
+}
+
+/* Dual of test_gl_constant_input_exact: inv_gl(delta at fhat(0,0,0)) is
+ * the constant 1 (synthesis is exact algebra, see
+ * test_inv_delta_l0_gives_constant), and forward_gl recovers
+ * fhat(0,0,0) = 1.0 to machine precision. */
+static void test_gl_single_coefficient_l0_exact(void)
+{
+    int N = 8;
+    size_t nsamp  = (size_t)N * N * N;
+    size_t ncoeff = su2_total_coeffs(N);
+    double _Complex *fhat    = calloc(ncoeff, sizeof(double _Complex));
+    double _Complex *fhat_rt = calloc(ncoeff, sizeof(double _Complex));
+    double _Complex *f       = malloc(nsamp  * sizeof(double _Complex));
+
+    fhat[su2_coeff_offset(0) + su2_mn_index(0, 0, 0)] = 1.0 + 0.0 * I;
+    su2_fft_inv_gl(N, fhat, f);
+    su2_fft_gl   (N, f,    fhat_rt);
+
+    ASSERT_CNEAR(fhat_rt[su2_coeff_offset(0) + su2_mn_index(0, 0, 0)],
+                 1.0 + 0.0 * I, 1e-13);
+
+    free(fhat); free(fhat_rt); free(f);
+}
+
+/* For each l in [0, N-1] set a single coefficient at (l, m=0, n=0) = 1,
+ * inverse_gl, forward_gl.  The closed-grid phi/psi aliasing (bead
+ * `su2fft-0t1`) introduces roundtrip error of order 0.1-0.3 across l in
+ * [0, N-1].  This test BOUNDS the worst case (< 0.5) and prints the
+ * empirical floor per l for visibility. */
+static void test_gl_single_coefficient_floor(void)
+{
+    int N = 8;
+    size_t nsamp  = (size_t)N * N * N;
+    size_t ncoeff = su2_total_coeffs(N);
+    double _Complex *fhat    = calloc(ncoeff, sizeof(double _Complex));
+    double _Complex *fhat_rt = calloc(ncoeff, sizeof(double _Complex));
+    double _Complex *f       = malloc(nsamp  * sizeof(double _Complex));
+
+    for (int l = 0; l < N; ++l) {
+        memset(fhat,    0, ncoeff * sizeof(double _Complex));
+        memset(fhat_rt, 0, ncoeff * sizeof(double _Complex));
+        fhat[su2_coeff_offset(l) + su2_mn_index(l, 0, 0)] = 1.0 + 0.0 * I;
+
+        su2_fft_inv_gl(N, fhat, f);
+        su2_fft_gl   (N, f,    fhat_rt);
+
+        double max_err = 0.0;
+        for (size_t i = 0; i < ncoeff; ++i) {
+            double a = cabs(fhat_rt[i] - fhat[i]);
+            if (a > max_err) max_err = a;
+        }
+        printf("    [gl single-coef floor] l=%d max_err=%.4e\n", l, max_err);
+        ASSERT_TRUE(max_err < 0.5);
+    }
+    fflush(stdout);
+
+    free(fhat); free(fhat_rt); free(f);
+}
+
+/* Synthesis (su2_fft_inv_gl) is a pure linear map; should hold to
+ * floating-point noise.  No quadrature dependence here. */
+static void test_gl_inv_linearity(void)
+{
+    int N = 6;
+    size_t ncoeff = su2_total_coeffs(N);
+    size_t nsamp  = (size_t)N * N * N;
+    double _Complex *fhat1         = malloc(ncoeff * sizeof(double _Complex));
+    double _Complex *fhat2         = malloc(ncoeff * sizeof(double _Complex));
+    double _Complex *fhat_combined = malloc(ncoeff * sizeof(double _Complex));
+    double _Complex *f1            = malloc(nsamp  * sizeof(double _Complex));
+    double _Complex *f2            = malloc(nsamp  * sizeof(double _Complex));
+    double _Complex *fc            = malloc(nsamp  * sizeof(double _Complex));
+
+    seed_rand(20260526);
+    for (size_t i = 0; i < ncoeff; ++i) {
+        fhat1[i] = (urand() - 0.5) + (urand() - 0.5) * I;
+        fhat2[i] = (urand() - 0.5) + (urand() - 0.5) * I;
+    }
+    const double _Complex alpha =  2.0 + 1.5 * I;
+    const double _Complex beta  = -0.7 + 0.4 * I;
+    for (size_t i = 0; i < ncoeff; ++i)
+        fhat_combined[i] = alpha * fhat1[i] + beta * fhat2[i];
+
+    su2_fft_inv_gl(N, fhat1,         f1);
+    su2_fft_inv_gl(N, fhat2,         f2);
+    su2_fft_inv_gl(N, fhat_combined, fc);
+
+    double max_err = 0.0;
+    for (size_t i = 0; i < nsamp; ++i) {
+        double _Complex expected = alpha * f1[i] + beta * f2[i];
+        double a = cabs(fc[i] - expected);
+        if (a > max_err) max_err = a;
+    }
+    ASSERT_TRUE(max_err < 1e-12);
+
+    free(fhat1); free(fhat2); free(fhat_combined);
+    free(f1); free(f2); free(fc);
+}
+
+/* Analytical GL synthesis test (mirrors test_inv_delta_l1_m0_n0_gives_cos_theta
+ * but at GL theta nodes): fhat(1, 0, 0) = 1 -> f(g) = 3 * cos(theta_k)
+ * where theta_k = arccos(x_k) at the GL nodes x_k. */
+static void test_gl_inv_delta_l1_m0_n0_gives_3cos_theta_at_gl_nodes(void)
+{
+    int N = 8;
+    size_t nsamp  = (size_t)N * N * N;
+    size_t ncoeff = su2_total_coeffs(N);
+    double _Complex *fhat = calloc(ncoeff, sizeof(double _Complex));
+    double _Complex *f    = malloc(nsamp  * sizeof(double _Complex));
+
+    fhat[su2_coeff_offset(1) + su2_mn_index(1, 0, 0)] = 1.0 + 0.0 * I;
+    su2_fft_inv_gl(N, fhat, f);
+
+    /* Recover the GL theta nodes for the expected values. */
+    double *x_gl = malloc((size_t)N * sizeof(double));
+    double *w_gl = malloc((size_t)N * sizeof(double));
+    su2_gl_nodes_weights(N, x_gl, w_gl);
+
+    double max_err = 0.0;
+    for (int j1 = 0; j1 < N; ++j1) {
+        for (int k = 0; k < N; ++k) {
+            double theta_k = acos(x_gl[k]);
+            double _Complex expected = 3.0 * cos(theta_k) + 0.0 * I;
+            for (int j2 = 0; j2 < N; ++j2) {
+                double a = cabs(f[su2_sample_index(N, j1, k, j2)] - expected);
+                if (a > max_err) max_err = a;
+            }
+        }
+    }
+    ASSERT_TRUE(max_err < 1e-12);
+
+    free(fhat); free(f); free(x_gl); free(w_gl);
+}
+
 int main(void)
 {
     RUN(test_inv_zero_input);
@@ -349,5 +576,11 @@ int main(void)
     RUN(test_roundtrip_spectrum_riemann_tolerance);
     RUN(test_roundtrip_spectrum_low_l_subspace);
     RUN(test_roundtrip_sample_bandlimited);
+    RUN(test_gl_constant_input_exact);
+    RUN(test_gl_constant_input_leakage);
+    RUN(test_gl_single_coefficient_l0_exact);
+    RUN(test_gl_single_coefficient_floor);
+    RUN(test_gl_inv_linearity);
+    RUN(test_gl_inv_delta_l1_m0_n0_gives_3cos_theta_at_gl_nodes);
     TEST_REPORT_AND_EXIT();
 }

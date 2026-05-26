@@ -297,3 +297,250 @@ void su2_fft_inv(int N,
     free(G);
     free(theta);
 }
+
+/**
+ * @brief Forward SU(2) FFT with Gauss-Legendre theta quadrature (bead su2fft-ega).
+ *
+ * Mirrors su2_fft.  The only differences vs su2_fft:
+ *   - theta_k = arccos(x_k) where x_k is the k-th N-point Gauss-Legendre node
+ *     on [-1, 1] (ascending), in place of the closed grid theta_k = k*pi/(N-1).
+ *   - The Stage 2 per-theta weight sin(theta_k)*dtheta (Riemann + Jacobian) is
+ *     replaced by the GL weight w_k (absorbs the Jacobian sin(theta)dtheta = -dx
+ *     into a single quadrature weight on [-1, 1]).
+ *   - The global normalisation drops dtheta and becomes norm_gl = 1/(2*N^2);
+ *     derivation in notes/gauss_legendre.md §6.
+ *
+ * Stage 1 is structurally identical to su2_fft: the closed-grid (phi, psi)
+ * fold + (N-1)x(N-1) FFTW backward plan + (-1)^{n+m} phase do not depend on
+ * the theta values, only on theta-slice index k.
+ *
+ * @param[in]  N     Bandlimit; grid is N x N x N samples (GL in theta).
+ * @param[in]  f     Length-N^3 complex sample array, row-major (j1, k, j2),
+ *                   with f[j1, k, j2] sampled at theta_k = arccos(x_k).
+ * @param[out] fhat  Length-su2_total_coeffs(N) complex coefficient array.
+ * @par Reference notes/gauss_legendre.md §5, §6.
+ */
+void su2_fft_gl(int N,
+                const double _Complex *f,
+                double _Complex *fhat)
+{
+    if (N < 2 || !f || !fhat) return;
+
+    const int M = N - 1;
+
+    /* N-point Gauss-Legendre nodes and weights on [-1, 1]; theta_k = arccos(x_k).
+     * notes/gauss_legendre.md §3. */
+    double *x_gl  = malloc((size_t)N * sizeof(double));
+    double *w_gl  = malloc((size_t)N * sizeof(double));
+    su2_gl_nodes_weights(N, x_gl, w_gl);
+    double *theta = malloc((size_t)N * sizeof(double));
+    for (int k = 0; k < N; ++k) theta[k] = acos(x_gl[k]);
+
+    /* -------- Stage 1 (identical to su2_fft) -------- */
+    fftw_complex *g = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
+    fftw_complex *G = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
+    fftw_plan plan  = fftw_plan_dft_2d(M, M, g, G, FFTW_BACKWARD, FFTW_ESTIMATE);
+
+    const int    nrange   = 2 * N - 1;
+    const size_t stride_n = (size_t)nrange;
+    const size_t stride_k = (size_t)nrange * (size_t)nrange;
+    double _Complex *F2 = malloc((size_t)N * stride_k * sizeof(double _Complex));
+
+    for (int k = 0; k < N; ++k) {
+        memset(g, 0, sizeof(fftw_complex) * (size_t)M * (size_t)M);
+
+        for (int j1 = 0; j1 < N; ++j1) {
+            int j1m = (j1 == N - 1) ? 0 : j1;
+            for (int j2 = 0; j2 < N; ++j2) {
+                int j2m = (j2 == N - 1) ? 0 : j2;
+                g[(size_t)j1m * (size_t)M + (size_t)j2m] +=
+                    f[su2_sample_index(N, j1, k, j2)];
+            }
+        }
+        fftw_execute(plan);
+
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int n_mod = ((n % M) + M) % M;
+            double sn = (n & 1) ? -1.0 : 1.0;
+            for (int m = -(N - 1); m <= N - 1; ++m) {
+                int m_mod = ((m % M) + M) % M;
+                double sm = (m & 1) ? -1.0 : 1.0;
+                F2[(size_t)k * stride_k
+                   + (size_t)(n + N - 1) * stride_n
+                   + (size_t)(m + N - 1)]
+                    = sn * sm * G[(size_t)n_mod * (size_t)M + (size_t)m_mod];
+            }
+        }
+    }
+
+    fftw_destroy_plan(plan);
+    fftw_free(g);
+    fftw_free(G);
+
+    /* -------- Stage 2 (GL weights + GL norm) --------
+     * Closed-grid Riemann was: norm = dphi*dtheta*dpsi / (8 pi^2), with
+     * per-theta weight sin(theta_k) * dtheta.  GL absorbs sin(theta_k)*dtheta
+     * into the single weight w_gl[k]; drop dtheta from the global norm.
+     *
+     * Per notes/gauss_legendre.md §6, the FFTW (-1)^{n+m} fold over-counts
+     * endpoints producing F2[k, 0, 0] = N^2 for constant f.  For the
+     * constant-input test to recover fhat(0)_{0,0} = 1 exactly,
+     *   norm * N^2 * (sum_k w_k * 1) = norm * N^2 * 2 = 1
+     *   =>  norm_gl = 1 / (2 * N^2).
+     */
+    const double norm = 1.0 / (2.0 * (double)N * (double)N);
+
+    double          *d_seq = malloc((size_t)N * sizeof(double));
+    double _Complex *acc   = malloc((size_t)N * sizeof(double _Complex));
+
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > N - 1) continue;
+
+            for (int l = l_min; l < N; ++l) acc[l] = 0.0 + 0.0*I;
+
+            for (int k = 0; k < N; ++k) {
+                su2_wigner_d_seq(l_min, N - 1, n, m, theta[k], d_seq);
+                double _Complex w = F2[(size_t)k * stride_k
+                                       + (size_t)(n + N - 1) * stride_n
+                                       + (size_t)(m + N - 1)] * w_gl[k];
+                for (int l = l_min; l < N; ++l) {
+                    acc[l] += d_seq[l - l_min] * w;
+                }
+            }
+
+            int r = ((n - m) % 4 + 4) % 4;
+            double _Complex phase;
+            switch (r) {
+                case 0:  phase =  1.0 + 0.0*I; break;
+                case 1:  phase =  0.0 + 1.0*I; break;
+                case 2:  phase = -1.0 + 0.0*I; break;
+                default: phase =  0.0 - 1.0*I; break;
+            }
+            double _Complex c = norm * phase;
+            for (int l = l_min; l < N; ++l) {
+                fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)] = c * acc[l];
+            }
+        }
+    }
+
+    free(acc);
+    free(d_seq);
+    free(F2);
+    free(theta);
+    free(w_gl);
+    free(x_gl);
+}
+
+/**
+ * @brief Inverse SU(2) FFT (Peter-Weyl synthesis) at Gauss-Legendre theta nodes.
+ *
+ * Mirrors su2_fft_inv.  The only difference is the theta evaluation grid:
+ * theta_k = arccos(x_k), with x_k the k-th N-point Gauss-Legendre node on
+ * [-1, 1].  The synthesis itself is a pure sum (no quadrature weight), so
+ * w_gl is NOT used here; only x_gl (to obtain theta_k).
+ *
+ * Stage 2-inv evaluates  G[k, n, m] = i^{m-n} * sum_l (2l+1) * fhat * d^l(theta_k)
+ * at the GL theta nodes; Stage 1-inv is the same (N-1)x(N-1) FFTW forward
+ * with the closed-grid fold trick (independent of theta).
+ *
+ * @param[in]  N     Bandlimit.
+ * @param[in]  fhat  Length-su2_total_coeffs(N) complex coefficient array.
+ * @param[out] f     Length-N^3 complex sample array, row-major (j1, k, j2),
+ *                   with f[j1, k, j2] sampled at theta_k = arccos(x_k).
+ * @par Reference notes/gauss_legendre.md §5, §6.
+ */
+void su2_fft_inv_gl(int N,
+                    const double _Complex *fhat,
+                    double _Complex *f)
+{
+    if (N < 2 || !fhat || !f) return;
+
+    const int M = N - 1;
+
+    /* GL nodes; weights are not used by the synthesis. */
+    double *x_gl  = malloc((size_t)N * sizeof(double));
+    double *w_gl  = malloc((size_t)N * sizeof(double));
+    su2_gl_nodes_weights(N, x_gl, w_gl);
+    double *theta = malloc((size_t)N * sizeof(double));
+    for (int k = 0; k < N; ++k) theta[k] = acos(x_gl[k]);
+
+    /* ---- Stage 2-inv ---- */
+    const int    nrange   = 2 * N - 1;
+    const size_t stride_n = (size_t)nrange;
+    const size_t stride_k = (size_t)nrange * (size_t)nrange;
+    double _Complex *G = malloc((size_t)N * stride_k * sizeof(double _Complex));
+
+    double *d_seq = malloc((size_t)N * sizeof(double));
+
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > N - 1) continue;
+
+            int r = ((m - n) % 4 + 4) % 4;
+            double _Complex phase;
+            switch (r) {
+                case 0:  phase =  1.0 + 0.0*I; break;
+                case 1:  phase =  0.0 + 1.0*I; break;
+                case 2:  phase = -1.0 + 0.0*I; break;
+                default: phase =  0.0 - 1.0*I; break;
+            }
+
+            for (int k = 0; k < N; ++k) {
+                su2_wigner_d_seq(l_min, N - 1, n, m, theta[k], d_seq);
+                double _Complex acc = 0.0 + 0.0*I;
+                for (int l = l_min; l < N; ++l) {
+                    double _Complex coef = fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)];
+                    acc += (double)(2*l + 1) * coef * d_seq[l - l_min];
+                }
+                G[(size_t)k * stride_k
+                  + (size_t)(n + N - 1) * stride_n
+                  + (size_t)(m + N - 1)] = phase * acc;
+            }
+        }
+    }
+
+    /* ---- Stage 1-inv (identical to su2_fft_inv) ---- */
+    fftw_complex *G_slice = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
+    fftw_complex *f_slice = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
+    fftw_plan plan  = fftw_plan_dft_2d(M, M, G_slice, f_slice, FFTW_FORWARD, FFTW_ESTIMATE);
+
+    for (int k = 0; k < N; ++k) {
+        memset(G_slice, 0, sizeof(fftw_complex) * (size_t)M * (size_t)M);
+
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int n_mod = ((n % M) + M) % M;
+            double sn = (n & 1) ? -1.0 : 1.0;
+            for (int m = -(N - 1); m <= N - 1; ++m) {
+                int m_mod = ((m % M) + M) % M;
+                double sm = (m & 1) ? -1.0 : 1.0;
+                G_slice[(size_t)n_mod * (size_t)M + (size_t)m_mod]
+                    += sn * sm * G[(size_t)k * stride_k
+                                   + (size_t)(n + N - 1) * stride_n
+                                   + (size_t)(m + N - 1)];
+            }
+        }
+        fftw_execute(plan);
+
+        for (int j1 = 0; j1 < N; ++j1) {
+            int j1m = (j1 == N - 1) ? 0 : j1;
+            for (int j2 = 0; j2 < N; ++j2) {
+                int j2m = (j2 == N - 1) ? 0 : j2;
+                f[su2_sample_index(N, j1, k, j2)] =
+                    f_slice[(size_t)j1m * (size_t)M + (size_t)j2m];
+            }
+        }
+    }
+
+    fftw_destroy_plan(plan);
+    fftw_free(G_slice);
+    fftw_free(f_slice);
+
+    free(d_seq);
+    free(G);
+    free(theta);
+    free(w_gl);
+    free(x_gl);
+}

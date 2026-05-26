@@ -159,6 +159,118 @@ using Random
         end
     end
 
+    @testset "Gauss-Legendre theta nodes (bead ega)" begin
+        @testset "gl_nodes_weights basic properties" begin
+            for N in (1, 2, 4, 8, 16)
+                x, w = SU2FFT.gl_nodes_weights(N)
+                @test length(x) == length(w) == N
+                @test all(-1 .< x .< 1)
+                @test all(w .> 0)
+                @test issorted(x)
+                @test sum(w) ≈ 2.0 atol=1e-13
+                # Symmetry: x[k] == -x[N-1-k] (zero-based -> reverse-paired).
+                @test maximum(abs.(x .+ reverse(x))) < 1e-14
+            end
+        end
+
+        @testset "GL degree exactness up to 2N-1" begin
+            # Integral of x^p on [-1,1] is 0 (odd p) or 2/(p+1) (even p).
+            # N-point GL is exact for polynomials of degree <= 2N-1.
+            for N in (4, 8)
+                x, w = SU2FFT.gl_nodes_weights(N)
+                for p in 0:(2N - 1)
+                    approx = sum(w[k] * x[k]^p for k in 1:N)
+                    exact = isodd(p) ? 0.0 : 2.0 / (p + 1)
+                    @test approx ≈ exact atol=1e-12
+                end
+            end
+        end
+
+        @testset "fft_gl(constant) -> exact DC" begin
+            # The headline GL improvement vs fft: fhat(0,0,0) = 1.0 exactly,
+            # not (N/(N-1))^2.
+            for N in (4, 6, 8, 16)
+                f = ones(ComplexF64, N, N, N)
+                fhat = SU2FFT.fft_gl(f)
+                @test fhat[1] ≈ 1.0 + 0.0im atol=1e-13
+            end
+        end
+
+        @testset "fft_gl(constant) leakage bounded (phi/psi aliasing floor)" begin
+            # Documents the empirical floor that bead su2fft-0t1 will eliminate.
+            N = 8
+            f = ones(ComplexF64, N, N, N)
+            fhat = SU2FFT.fft_gl(f)
+            leakage = maximum(abs.(fhat[2:end]))   # skip the DC entry
+            @info "fft_gl(constant) leakage" N leakage
+            @test leakage < 0.3   # empirically ~0.197 at N=8
+        end
+
+        @testset "fft_inv_gl(delta_{l=0,m=0,n=0}) -> constant 1 at GL nodes" begin
+            N = 8
+            fhat = zeros(ComplexF64, SU2FFT.total_coeffs(N))
+            fhat[1] = 1.0 + 0im
+            f = SU2FFT.fft_inv_gl(fhat, N)
+            @test maximum(abs.(f .- (1.0 + 0im))) < 1e-13
+        end
+
+        @testset "fft_inv_gl(delta_{l=1,m=0,n=0}) -> 3*cos(theta_k_gl)" begin
+            N = 8
+            fhat = zeros(ComplexF64, SU2FFT.total_coeffs(N))
+            off = SU2FFT.coeff_offset(1)
+            idx = off + (0 + 1) * 3 + (0 + 1) + 1
+            fhat[idx] = 1.0 + 0im
+            f = SU2FFT.fft_inv_gl(fhat, N)
+            # GL theta nodes
+            x_gl, _ = SU2FFT.gl_nodes_weights(N)
+            theta_gl = acos.(x_gl)
+            max_err = 0.0
+            for k in 0:N-1
+                expected = 3.0 * cos(theta_gl[k+1]) + 0im
+                for j1 in 0:N-1, j2 in 0:N-1
+                    got = f[j2+1, k+1, j1+1]
+                    max_err = max(max_err, abs(got - expected))
+                end
+            end
+            @test max_err < 1e-12
+        end
+
+        @testset "linearity of fft_inv_gl" begin
+            N = 6
+            Random.seed!(20260526)
+            nc = SU2FFT.total_coeffs(N)
+            fhat1 = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            fhat2 = rand(ComplexF64, nc) .- (0.5 + 0.5im)
+            alpha = 2.0 + 1.5im
+            beta  = -0.7 + 0.4im
+            f1 = SU2FFT.fft_inv_gl(fhat1, N)
+            f2 = SU2FFT.fft_inv_gl(fhat2, N)
+            fc = SU2FFT.fft_inv_gl(alpha .* fhat1 .+ beta .* fhat2, N)
+            @test maximum(abs.(fc .- (alpha .* f1 .+ beta .* f2))) < 1e-12
+        end
+
+        @testset "GL roundtrip floor (regression bound; bead su2fft-0t1 tracks fix)" begin
+            # Single-coefficient roundtrip at (l, 0, 0): error stays bounded.
+            # Empirical at N=8: max around 0.34 at l=2; bound at 0.5.
+            N = 8
+            nc = SU2FFT.total_coeffs(N)
+            fhat = zeros(ComplexF64, nc)
+            fhat_rt = zeros(ComplexF64, nc)
+            max_overall = 0.0
+            for l in 0:(N - 1)
+                fhat .= 0
+                idx_l00 = SU2FFT.coeff_offset(l) + (0 + l) * (2l + 1) + (0 + l) + 1
+                fhat[idx_l00] = 1.0 + 0im
+                f = SU2FFT.fft_inv_gl(fhat, N)
+                fhat_rt .= SU2FFT.fft_gl(f)
+                max_err = maximum(abs.(fhat_rt .- fhat))
+                max_overall = max(max_overall, max_err)
+            end
+            @info "GL roundtrip floor (max over l in [0, N-1] at (m=n=0))" N max_overall
+            @test max_overall < 0.5
+        end
+    end
+
     @testset "fhat_at accessor" begin
         N = 4
         Random.seed!(1)

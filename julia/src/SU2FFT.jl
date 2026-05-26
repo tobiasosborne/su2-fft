@@ -39,6 +39,9 @@ const _SYM_FT_DIRECT     = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_WIGNER_D      = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_TOTAL_COEFFS  = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_COEFF_OFFSET  = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_FFT_GL          = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_FFT_INV_GL      = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_GL_NODES        = Ref{Ptr{Cvoid}}(C_NULL)
 
 function __init__()
     # Fallback for the Julia 1.12 bundled-libgmp ABI mismatch: pre-load the
@@ -61,9 +64,12 @@ function __init__()
     _SYM_WIGNER_D[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_wigner_d)
     _SYM_TOTAL_COEFFS[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_total_coeffs)
     _SYM_COEFF_OFFSET[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_coeff_offset)
+    _SYM_FFT_GL[]       = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_gl)
+    _SYM_FFT_INV_GL[]   = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_inv_gl)
+    _SYM_GL_NODES[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_gl_nodes_weights)
 end
 
-export fft, ft_direct, fft_inv, wigner_d, total_coeffs, coeff_offset,
+export fft, ft_direct, fft_inv, fft_gl, fft_inv_gl, gl_nodes_weights, wigner_d, total_coeffs, coeff_offset,
        fhat_at, fhat_block, libsu2_path
 
 # ----- Coefficient layout helpers (ccall to C) -----
@@ -171,6 +177,72 @@ function fft_inv(fhat::AbstractVector{ComplexF64}, N::Integer)::Array{ComplexF64
     N >= 2 || throw(ArgumentError("N must be >= 2, got $N"))
     f = Array{ComplexF64,3}(undef, N, N, N)
     ccall(_SYM_FFT_INV[], Cvoid,
+          (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
+          N, fhat, f)
+    return f
+end
+
+"""
+    gl_nodes_weights(N::Integer) -> (Vector{Float64}, Vector{Float64})
+
+Return N-point Gauss-Legendre nodes (ascending in (-1, 1)) and weights on
+[-1, 1]. Wraps `su2_gl_nodes_weights`.
+
+The theta-direction grid for `fft_gl` / `fft_inv_gl` is
+`theta_k = acos(x_k)` where `x_k = first(gl_nodes_weights(N))[k]`.
+"""
+function gl_nodes_weights(N::Integer)::Tuple{Vector{Float64}, Vector{Float64}}
+    N >= 1 || throw(ArgumentError("N must be >= 1, got $N"))
+    x = Vector{Float64}(undef, N)
+    w = Vector{Float64}(undef, N)
+    ccall(_SYM_GL_NODES[], Cvoid,
+          (Cint, Ptr{Cdouble}, Ptr{Cdouble}),
+          N, x, w)
+    return x, w
+end
+
+"""
+    fft_gl(f::Array{ComplexF64,3}) -> Vector{ComplexF64}
+
+Forward FFT on SU(2) using Gauss-Legendre theta nodes (bead `su2fft-ega`).
+The sample array `f` must be sampled at the GL theta grid:
+`theta_k = acos(gl_nodes_weights(N)[1][k])`, with phi/psi on the closed grid.
+
+Layout: `f[j2+1, k+1, j1+1] = sample at (j1, k, j2)` (same as `fft`).
+
+**Tolerance.** Forward(constant=1) gives `fhat[1] = 1.0` EXACTLY (vs the
+closed-grid `fft` which gives `(N/(N-1))^2`). Leakage to other coefficients
+is ~0.2 at N=8 due to closed-grid phi/psi aliasing — see bead `su2fft-0t1`
+for the structural fix.
+
+Returns flat `Vector{ComplexF64}` of length `total_coeffs(N)`.
+"""
+function fft_gl(f::Array{ComplexF64,3})::Vector{ComplexF64}
+    N = size(f, 1)
+    size(f) == (N, N, N) || throw(ArgumentError("samples must be (N,N,N), got $(size(f))"))
+    N >= 2 || throw(ArgumentError("N must be >= 2, got $N"))
+    fhat = Vector{ComplexF64}(undef, total_coeffs(N))
+    ccall(_SYM_FFT_GL[], Cvoid,
+          (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
+          N, f, fhat)
+    return fhat
+end
+
+"""
+    fft_inv_gl(fhat::AbstractVector{ComplexF64}, N::Integer) -> Array{ComplexF64,3}
+
+Inverse FFT (Peter-Weyl synthesis) sampled at Gauss-Legendre theta nodes
+(bead `su2fft-ega`). Same convention as `fft_inv` but the output `f` is
+sampled at `theta_k = acos(gl_nodes_weights(N)[1][k])`.
+
+Pair with `fft_gl` for a forward+inverse round trip on the same grid.
+"""
+function fft_inv_gl(fhat::AbstractVector{ComplexF64}, N::Integer)::Array{ComplexF64,3}
+    length(fhat) == total_coeffs(N) || throw(ArgumentError(
+        "fhat must have length total_coeffs(N) = $(total_coeffs(N)); got $(length(fhat))"))
+    N >= 2 || throw(ArgumentError("N must be >= 2, got $N"))
+    f = Array{ComplexF64,3}(undef, N, N, N)
+    ccall(_SYM_FFT_INV_GL[], Cvoid,
           (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
           N, fhat, f)
     return f

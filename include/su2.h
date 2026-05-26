@@ -51,6 +51,21 @@ double *su2_grid_phi(int N);
 double *su2_grid_theta(int N);
 double *su2_grid_psi(int N);
 
+/* ------- Gauss-Legendre quadrature on [-1, 1] -------
+ *
+ * Compute N-point GL nodes and weights for exact integration of polynomials
+ * up to degree 2N-1.  Used by su2_fft_gl / su2_fft_inv_gl (bead su2fft-ega)
+ * to integrate the theta direction exactly under the substitution
+ * x = cos(theta).
+ *
+ * @param[in]  N  Number of nodes (>= 1).
+ * @param[out] x  Length-N array of nodes, ascending in [-1, 1].
+ * @param[out] w  Length-N array of weights.
+ *
+ * See notes/gauss_legendre.md §3.
+ */
+void su2_gl_nodes_weights(int N, double *x, double *w);
+
 /* ------- Wigner small-d / matrix coefficient P^l_{mn}(cos theta) -------
  *
  * Returns the value P^l_{mn}(cos theta_k) defined by the paper at line 537.
@@ -130,5 +145,24 @@ void su2_fft(int N,
 void su2_fft_inv(int N,
                  const double _Complex *fhat,
                  double _Complex *f);
+
+/* ------- Gauss-Legendre variant FFTs (bead su2fft-ega) -------
+ *
+ * Same algorithm as su2_fft / su2_fft_inv but uses N-point Gauss-Legendre
+ * quadrature in theta instead of the closed-grid Riemann sum. The theta
+ * sample points are theta_k = arccos(x_k) where x_k is the k-th GL node;
+ * phi and psi grids are unchanged (closed grid).
+ *
+ * Spec: notes/gauss_legendre.md.
+ *
+ * Pair `su2_fft_gl` and `su2_fft_inv_gl` together (the sample layout for f
+ * MUST use GL theta nodes for both directions).
+ *
+ * @param[in]  N     Bandlimit.
+ * @param[in]  f / fhat  Length-N^3 / length-su2_total_coeffs(N) complex array.
+ * @param[out] fhat / f  Output of the corresponding size.
+ */
+void su2_fft_gl(int N, const double _Complex *f, double _Complex *fhat);
+void su2_fft_inv_gl(int N, const double _Complex *fhat, double _Complex *f);
 
 #endif /* SU2_H */

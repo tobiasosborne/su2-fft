@@ -322,17 +322,20 @@ path (see `HANDOFF.md §2.7`) -- the inverse amplifies it because the synthesis
 is evaluated on the same grid.  The analytic one-coefficient tests pass at
 machine precision because they bypass the forward analysis step entirely.
 
-**Path to exact roundtrip: bead `su2fft-ega`.**  Replacing the closed-grid
+**Partial fix: bead `su2fft-ega` (shipped).**  Replacing the closed-grid
 Riemann theta nodes with Gauss-Legendre nodes integrates all Wigner-d
-polynomials of degree up to 2N-1 exactly.  After `ega` lands, the forward +
-inverse pair will round-trip at machine precision on bandlimited inputs.
-Until then, applications that require `forward(inverse(fhat)) = fhat` to
-better than O(1) relative error should wait on `ega`.
+polynomials of degree up to 2N-1 exactly in Stage 2.  After `ega` landed,
+DC normalisation is exact (1.0 to 1e-12; see §3.6) and low-mode analytical
+synthesis hits 1e-12.  However, the phi/psi Stage 1 closed-grid aliasing
+remains (see §3.6).  Applications that require `forward(inverse(fhat)) = fhat`
+to better than O(1) relative error at all coefficients must wait on bead
+`su2fft-0t1` (phi/psi grid resolution).
 
 ### 3.4 Test coverage (`tests/test_roundtrip.c`)
 
-Seven tests, all passing.  The C suite grows from 18 to 25 tests with
-`test_roundtrip` included.
+Seven tests for the closed-grid path, all passing; plus six GL testsets added
+by bead `ega` (see §3.6).  The C suite is at 34 tests total (was 18 before
+`test_roundtrip`; grew to 25 with 3lx; to 34 with ega).
 
 | test                        | what it checks                            | residual     |
 |-----------------------------|-------------------------------------------|--------------|
@@ -353,9 +356,99 @@ claim precision.
 Beads `su2fft-d7v` (convolution), `su2fft-31x` (QSP primitives), and
 `su2fft-5fb` (spherical-harmonic FFT) are **formally unblocked** by 3lx --
 their dependency on `su2_fft_inv` is satisfied.  Their **practical utility**
-waits on `su2fft-ega`: until the exact roundtrip lands, spectrum-domain
-round-trips carry O(1) relative error, which is insufficient for convolution
-or QSP inversion.
+waits on `su2fft-0t1` (phi/psi grid resolution; see §3.6): until that fix
+lands, spectrum-domain round-trips carry O(1) relative error at modes near
+the bandlimit, which is insufficient for convolution or QSP inversion.
+
+---
+
+## 3.6 Gauss-Legendre theta nodes (bead `ega`)
+
+Bead `su2fft-ega` shipped a Gauss-Legendre (GL) quadrature path alongside
+the closed-grid path.  New functions `su2_fft_gl` and `su2_fft_inv_gl` in
+`src/su2_fft.c` (~212 LOC) mirror `su2_fft` / `su2_fft_inv` but replace the
+closed theta grid with GL nodes; `src/su2_gauss_legendre.c` (~75 LOC) computes
+those nodes and weights via Newton iteration on the Legendre polynomial P_N.
+Julia exports `fft_gl`, `fft_inv_gl`, and `gl_nodes_weights`.
+
+### Substitution: `x = cos(theta)`
+
+The forward analysis integrand contains `sin(theta_k) dtheta`.  Under
+`x = cos(theta)`, `sin(theta) dtheta = -dx`, so the integral over `[0, pi]`
+becomes an integral over `[-1, 1]`:
+
+```
+fhat(l)_{m,n} = (dphi * dpsi / 8pi^2) *
+                int_{-1}^{1}  F2(x, n, m) * conj(P^l_{n,m}(x))  dx
+```
+
+where `F2(x, n, m)` is the Stage-1 2-D DFT output interpolated at
+`x_k = cos(theta_k^GL)`.  An N-point GL quadrature integrates polynomials of
+degree up to `2N-1` exactly; Wigner-d polynomials at degree `l <= N-1` satisfy
+`deg = 2(N-1) <= 2N-2 < 2N-1`, so Stage 2 is exact.
+
+### Normalisation `norm_gl = 1/(2N^2)`
+
+The closed-grid `su2_fft` uses `norm = 1 / ((N-1)^2 * N)` (Riemann
+step × N-point sum).  For the GL path, Stage 1 (phi/psi) still uses the
+closed-grid fold on an `(N-1)x(N-1)` FFTW plan, which contributes a factor of
+`1/(N-1)^2` from the fold normalisation.  Stage 2 replaces the `sin(theta_k)`
+weight with the GL weight `w_k`; the GL weights satisfy `sum_k w_k = 2`
+(integral of `dx` over `[-1, 1]`).  The `8pi^2` denominator absorbs the
+`(2pi)^2` from the phi/psi integrals and the factor of `2` from the `dx`
+integral, leaving:
+
+```
+norm_gl = 1 / (2 * N^2)
+```
+
+This is the normalisation used in `su2_fft_gl`; it makes the constant-function
+test exact (see below).
+
+### Analytical improvements
+
+**DC normalization is exact.**  Under the closed-grid path,
+`forward(constant_function)` returns `(N/(N-1))^2 = 1.31` at N=8 rather than
+`1.0`.  Under the GL path, `forward(constant_function)` returns `1.0` exactly
+(to 1e-12).  The `(N/(N-1))^2` systematic bias in §2.7 of `HANDOFF.md` is
+eliminated for the GL path.
+
+**Single-coefficient analytical synthesis.**  Constructing `fhat` with
+`fhat(0, 0, 0) = 1` and evaluating `su2_fft_inv_gl` returns the constant
+function on the GL grid to 1e-12.  Constructing `fhat(1, 0, 0) = 1` and
+synthesising recovers `3 * cos(theta_k)` at each GL theta node to 1e-12.
+
+**Test coverage.**  `tests/test_gauss_legendre.c` adds 3 testsets (GL node
+basic properties, degree exactness to 2N-1, N=4 analytical).
+`tests/test_roundtrip.c` gains 6 GL testsets (constant exact, leakage bounded,
+single-coefficient analytical, linearity, single-coefficient floor).
+Total: 34/34 C tests pass (was 28); 274/274 Julia tests pass (was 211).
+
+### Residual phi/psi aliasing (bead `su2fft-0t1`)
+
+The GL quadrature fixes the theta integration.  A separate aliasing error
+remains in the phi/psi Stage 1 that the GL theta nodes do not address.  At
+N=8 GL:
+
+- `forward(constant)` leakage to non-DC coefficients: max ~0.197.
+- Single-coefficient roundtrip `forward(inverse(e_{l,0,0}))` at l in [0, N-1]:
+  max error ~0.344.
+- Single-coefficient roundtrip at `(l=N-1, m=±(N-1), n=0)`: error ~3 (worst).
+
+**Root cause.**  The closed-grid phi/psi fold over-counts endpoints
+(`g[0] = f[0] + f[N-1]`).  The `(-1)^{n+m}` phase partially corrects for the
+half-shift but does not eliminate aliasing for modes with `|m|` or `|n|` near
+`N-1`.  The bandlimit demands modes up to `|m|, |n| = N-1` (requiring `2N-1`
+independent frequencies) but the closed N-point grid resolves only `~N` modes.
+For low `|m|, |n|` the error is small; near `N-1` it is O(1).
+
+**Path to exact roundtrip.**  Bead `su2fft-0t1` (P1) tracks the structural
+fix.  Two options: (a) use a `2N-1` point grid in phi/psi (resolving all
+required modes), or (b) restrict the bandlimit to `|m|, |n| < N/2`.  Until
+`su2fft-0t1` lands, the GL pair gives exact DC and exact low-mode coefficients
+but the spectrum roundtrip at high `|m|, |n|` remains O(1) error.  Application
+beads `su2fft-d7v`, `su2fft-31x`, and `su2fft-5fb` formally unblocked by
+`3lx` wait on `0t1` for practical precision.
 
 ---
 

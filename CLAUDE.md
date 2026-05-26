@@ -69,7 +69,7 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
    path has the double path as its prec=53 anchor. Unit tests catch typos;
    cross-checks catch algorithmic errors. Prefer the latter.
 
-8. **GET FEEDBACK FAST.** `make test` runs 25 tests across 6 binaries in
+8. **GET FEEDBACK FAST.** `make test` runs 34 tests across 7 binaries in
    ~5s. Run it after every non-trivial change — don't code blind for 500
    lines then check. For a single binary: `make test/test_fft && build/test_fft`.
 
@@ -126,8 +126,10 @@ Quick reference:
 5. **Integer-l only.** Half-integer support is bead `su2fft-n8e`; it
    requires factorials → Gammas and a non-periodic grid.
 
-6. **`(N/(N-1))^2`** is the systematic Riemann error from the closed grid,
-   not a bug. `test_ft_direct_constant` uses the modified target.
+6. **`(N/(N-1))^2`** is the systematic Riemann error from the closed theta
+   grid, not a bug. `test_ft_direct_constant` uses the modified target.  The GL
+   path (`su2_fft_gl`) eliminates this factor for theta -- `forward(constant) = 1.0`
+   to 1e-12 -- but the phi/psi closed-grid aliasing remains (bead `su2fft-0t1`).
 
 7. **`pow()` is shockingly expensive.** 60–78% of cycles. Never call
    `pow(x, k)` for integer `k` in a hot loop — use repeated squaring or
@@ -156,18 +158,20 @@ su2-fft/
     su2_grid.c                      # Euler-angle grid + coefficient layout
     su2_wigner.c                    # stable Wigner small-d via de Moivre sum
     su2_ft.c                        # direct O(N^6) reference FT
-    su2_fft.c                       # O(N^4) fast FFT (double): su2_fft (forward) + su2_fft_inv (inverse, bead 3lx)
+    su2_fft.c                       # O(N^4) fast FFT (double): su2_fft (forward) + su2_fft_inv (inverse, bead 3lx) + su2_fft_gl / su2_fft_inv_gl (GL theta nodes, bead ega)
+    su2_gauss_legendre.c            # GL node/weight computation via Newton iteration on P_N (bead ega)
     su2_wigner_arb.c                # arb (acb_t) Wigner
     su2_ft_arb.c                    # arb direct FT
     su2_fft_arb.c                   # arb fast FFT (acb_dft_prod + conj trick)
 
-  tests/                            # 25 tests, 6 binaries (post 3lx)
+  tests/                            # 34 tests, 7 binaries (post ega)
     test_grid.c                     # Euler-angle grid invariants
     test_wigner.c                   # small-d unitarity, P_l limit
     test_ft.c                       # direct FT against analytic ground truths
     test_fft.c                      # FFT cross-check vs direct (gold standard)
     test_arb.c                      # arb direct vs arb fast; arb vs double
-    test_roundtrip.c                # su2_fft_inv: 7 tests; analytical synthesis 1e-12, roundtrip floor documented
+    test_roundtrip.c                # su2_fft_inv + GL variants: analytical synthesis 1e-12; roundtrip floors documented
+    test_gauss_legendre.c           # GL nodes: basic properties, degree exactness to 2N-1, N=4 analytical
 
   bench/
     compare.c                       # direct vs fast timing + max-diff sweep
@@ -190,7 +194,7 @@ su2-fft/
 ## Build & test
 
 ```bash
-# Full test suite — 25 tests, 6 binaries, ~5s
+# Full test suite — 34 tests, 7 binaries, ~5s
 make test
 
 # Benchmark sweep — direct vs fast, ~3s
@@ -224,7 +228,7 @@ perf record -F 4000 -e cpu_core/cycles/ -g build/compare
 
 Before claiming a Wigner / FT / FFT change is done:
 
-- [ ] `make test` passes — all 25 tests green.
+- [ ] `make test` passes — all 34 tests green.
 - [ ] `tests/test_fft.c::test_fft_matches_direct_random` still passes at
       the same 1e-10 tolerance (or tighter).
 - [ ] `tests/test_arb.c::test_arb_direct_vs_fast` still passes.

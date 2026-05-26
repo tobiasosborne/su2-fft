@@ -23,7 +23,7 @@ https://arxiv.org/abs/2605.23923 — Delgado et al., May 2026.
 To verify nothing rotted before you start:
 
 ```sh
-make test                  # 17 tests, 5 binaries; takes ~5 s
+make test                  # 34 tests, 7 binaries; takes ~5 s
 make bench && build/compare  # benchmark sweep, ~3 s
 ```
 
@@ -56,13 +56,23 @@ and N=8 to 1e-10.
 
 Bead `su2fft-3lx` (Peter-Weyl synthesis) shipped: `src/su2_fft.c` now contains
 both `su2_fft` (forward) and `su2_fft_inv` (inverse, 118 LOC appended).
-`tests/test_roundtrip.c` adds 7 tests; the C test count grows from 18 to 25.
+`tests/test_roundtrip.c` adds 7 tests; the C test count grew from 18 to 25.
 Analytical synthesis hits machine precision (1e-12); spectrum roundtrip
 `forward(inverse(fhat)) ≈ fhat` is NOT machine precision under the closed-grid
 Riemann theta quadrature -- rel_err ~5.6 at N=16 for random fhat (see §7 below
-and `ALGORITHM.md §3`).  Julia bindings grow from 199/199 to 211/211 tests
-(`SU2FFT.fft_inv` exported).  The top P1 priority is now `su2fft-ega`
-(Gauss-Legendre theta nodes) which will close the roundtrip gap.
+and `ALGORITHM.md §3`).  Julia bindings grew from 199/199 to 211/211 tests
+(`SU2FFT.fft_inv` exported).
+
+Bead `su2fft-ega` (Gauss-Legendre theta nodes) shipped: `src/su2_gauss_legendre.c`
+(~75 LOC) computes GL nodes and weights; `src/su2_fft.c` gained `su2_fft_gl` and
+`su2_fft_inv_gl` (~212 LOC appended).  `tests/test_gauss_legendre.c` adds 3
+testsets; `tests/test_roundtrip.c` gains 6 GL testsets.  C test count: 34/34
+(was 28).  Julia: `fft_gl`, `fft_inv_gl`, `gl_nodes_weights` exported; 274/274
+tests pass (was 211).  DC normalisation is now exact: `forward(constant) = 1.0`
+to 1e-12 (closed grid gave `(N/(N-1))^2 = 1.31` at N=8).  A separate phi/psi
+aliasing floor remains (see §7 and `ALGORITHM.md §3.6`); bead `su2fft-0t1`
+tracks the fix.  The **top P1 priority is now `su2fft-0t1`** (phi/psi grid
+resolution), not `ega`.
 
 ---
 
@@ -102,7 +112,9 @@ in source comments at point of use.
 
 7. **The closed-grid (N/(N-1))^2 factor** is the systematic Riemann error
    that makes `test_ft_direct_constant` use the modified target `(N/(N-1))^2`
-   rather than 1.0.  This is intrinsic to the paper's grid, not a bug.
+   rather than 1.0.  This is intrinsic to the paper's closed theta grid, not a
+   bug.  The GL path (`su2_fft_gl`) eliminates this factor -- DC returns 1.0
+   exactly -- but a separate phi/psi aliasing error remains (bead `su2fft-0t1`).
 
 ---
 
@@ -146,21 +158,24 @@ Portable fix is tracked as bead `su2fft-e5z`.
 **`su2fft-3lx` shipped.**  `su2_fft_inv` is in `src/su2_fft.c`.  Analytical
 synthesis reaches 1e-12; spectrum roundtrip under closed-grid Riemann is ~5.6
 relative error at N=16.  Beads `su2fft-d7v`, `su2fft-31x`, `su2fft-5fb` are
-formally unblocked but their practical tolerance depends on `su2fft-ega`.
+formally unblocked but their practical tolerance depends on `su2fft-0t1`.
 
-**New top priority: `su2fft-ega` (Gauss-Legendre theta nodes).**  This is the
-path to exact spectrum roundtrip at machine precision.  After `ega` lands,
-`forward(inverse(fhat))` rounds trip at ~1e-12 for bandlimited inputs, and
-convolution / QSP / spherical-harmonic beads become usable.  P1 priority.
+**New top priority: `su2fft-0t1` (phi/psi grid resolution).**  `ega` fixed the
+DC normalisation (exact to 1e-12) but the phi/psi closed-grid aliasing remains.
+At N=8 GL the single-coefficient roundtrip error at `(l=N-1, m=±(N-1), n=0)` is
+~3 (O(1)).  `su2fft-0t1` tracks the structural fix: either (a) a `2N-1` point
+phi/psi grid, or (b) bandlimit restriction to `|m|, |n| < N/2`.  This is what
+unblocks the application beads at useful precision.
 
-**After `ega`: `su2fft-cvh` (SIMD), then `su2fft-lg8` (OpenMP over (m, n)).**
-Both remain pure performance wins, independent of the quadrature change.
+**After `su2fft-0t1`: `su2fft-cvh` (SIMD), then `su2fft-lg8` (OpenMP over (m, n)).**
+Both remain pure performance wins, independent of the grid change.
 
-**Application beads -- wait on `ega`.**  `su2fft-d7v` (convolution),
+**Application beads -- wait on `su2fft-0t1`.**  `su2fft-d7v` (convolution),
 `su2fft-31x` (QSP primitives), `su2fft-erv`, `su2fft-5fb` (spherical) are all
-formally unblocked by 3lx.  None of them achieves useful precision until the
-Gauss-Legendre quadrature (`ega`) lands and closes the roundtrip gap.  Pick up
-`ega` before starting any of these.
+formally unblocked by 3lx.  `ega` raised the precision floor (exact DC, exact
+low modes) but the worst-case spectrum roundtrip at high `|m|, |n|` is still O(1)
+error.  None of these achieves useful precision at all coefficients until `0t1`
+lands.  Pick up `su2fft-0t1` before starting any of these.
 
 **Trig-sharing bead `su2fft-xxb`** remains a sound ~10% seed optimisation
 (hoisting `cos(theta_k/2)` / `sin(theta_k/2)` out of the (m, n) loop at fixed
@@ -317,8 +332,28 @@ original "seed < 20%" criterion was set against the pre-m21 calling pattern
   polynomials of degree N-1.  This is the same closed-grid Riemann limitation as
   the forward path; the test documents it with tolerance 10.0, not 1e-10.
 - Three downstream beads (`su2fft-d7v`, `su2fft-31x`, `su2fft-5fb`) are formally
-  unblocked.  Practical utility waits on `su2fft-ega` (exact roundtrip via
-  Gauss-Legendre theta nodes).  `su2fft-ega` is now P1.
+  unblocked.  Practical utility waits on `su2fft-0t1` (phi/psi grid resolution;
+  see §7 ega DONE block and `ALGORITHM.md §3.6`).  `su2fft-0t1` is now P1.
+
+**`su2fft-ega` (Gauss-Legendre theta nodes) — DONE.**
+- `src/su2_gauss_legendre.c` (~75 LOC): `su2_gl_nodes_weights(N, x, w)` via
+  Newton iteration on the Legendre polynomial P_N.
+- `src/su2_fft.c` appended `su2_fft_gl` and `su2_fft_inv_gl` (~212 LOC).
+  `norm_gl = 1/(2N^2)`.  Declaration in `include/su2.h`.
+- `tests/test_gauss_legendre.c`: 3 testsets (GL node properties, degree
+  exactness to 2N-1, N=4 analytical).
+- `tests/test_roundtrip.c` gains 6 GL testsets.  C tests: 34/34 (was 28).
+- `julia/src/SU2FFT.jl`: `fft_gl`, `fft_inv_gl`, `gl_nodes_weights` exported.
+  Julia tests: 274/274 (was 211).
+
+Concrete numbers:
+- `forward(constant)` DC coefficient: 1.0 exact to 1e-12 (closed grid: 1.31 at N=8).
+- Analytical synthesis at l=0 (`fhat(1,0,0)=1` → `3*cos(theta_k)`): residual 1e-12.
+- `forward(constant)` leakage to other coefficients: max ~0.197 at N=8 (phi/psi aliasing).
+- Single-coefficient roundtrip `(l,m=0,n=0)`: max error ~0.344 over l in [0,N-1].
+- Single-coefficient roundtrip at `(l=N-1, m=±(N-1), n=0)`: error ~3 (worst case).
+
+DC is fixed.  Phi/psi aliasing floor remains.  Bead `su2fft-0t1` is the follow-up.
 
 **`su2fft-n8e` (Half-integer l) — DONE when:**
 - A new test verifies the spin-1/2 representation explicitly:

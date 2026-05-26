@@ -109,9 +109,10 @@ include/su2.h              Public API and storage-layout contract
 src/su2_grid.c             Euler-angle grid, coefficient layout helpers
 src/su2_wigner.c           Stable Wigner small-d via the de Moivre sum
 src/su2_ft.c               Direct O(N^6) reference Fourier transform
-src/su2_fft.c              O(N^4) fast Fourier transform (double precision): su2_fft (forward) and su2_fft_inv (inverse)
+src/su2_fft.c              O(N^4) fast Fourier transform (double precision): su2_fft (forward), su2_fft_inv (inverse), su2_fft_gl and su2_fft_inv_gl (Gauss-Legendre theta nodes, bead ega)
+src/su2_gauss_legendre.c   GL node/weight computation via Newton iteration on P_N (bead ega)
 src/su2_{wigner,ft,fft}_arb.c   FLINT arb/acb arbitrary-precision parallel path
-tests/test_*.c             TDD red/green checks for every piece (includes test_roundtrip.c: 7 tests for su2_fft_inv)
+tests/test_*.c             TDD red/green checks for every piece (includes test_roundtrip.c: 13 tests for su2_fft_inv + GL variants; test_gauss_legendre.c: 3 testsets for GL nodes)
 bench/compare.c            Cross-comparison and timing at each N
 bench/vis_dump.c           Spectrum dump in Python-readable format
 bench/visualize.py         Matplotlib spectrum plot
@@ -141,7 +142,7 @@ A thin Julia wrapper lives at `julia/`. The package exposes `su2_fft`,
 using Pkg
 Pkg.develop(path="/path/to/su2-fft/julia")
 Pkg.build("SU2FFT")     # builds libsu2.so via make
-Pkg.test("SU2FFT")      # 211 tests; gold-standard fft ≈ ft_direct at 1e-10
+Pkg.test("SU2FFT")      # 274 tests; gold-standard fft ≈ ft_direct at 1e-10
 
 using SU2FFT
 N = 8
@@ -161,21 +162,26 @@ fhat_at_l1_m0_n0 = SU2FFT.fhat_at(fhat_fast, 1, 0, 0)
 block_l2         = SU2FFT.fhat_block(fhat_fast, 2)   # (5, 5) view
 ```
 
-**Spectrum roundtrip caveat.**  `SU2FFT.fft(SU2FFT.fft_inv(fhat, N))` is NOT
-machine precision under the current closed-grid Riemann theta quadrature.  At
-N=16 with random `fhat`, the relative error is approximately 5.6 (O(1), not
-O(1/N^2)).  The root cause is that Wigner-d polynomials of degree up to N-1
-are not exactly integrated by N Riemann nodes on the closed theta grid; the
-forward analysis is lossy even for bandlimited inputs.
+**Gauss-Legendre variant (bead `ega`).** `SU2FFT.fft_gl` and `SU2FFT.fft_inv_gl`
+use Gauss-Legendre theta nodes instead of the closed grid.  This fixes the DC
+normalisation: `fft_gl(constant_function)` returns `fhat(0,0,0) = 1.0` exactly
+(to 1e-12), where the closed-grid path returned `(N/(N-1))^2 = 1.31` at N=8.
+Single-coefficient synthesis at l=0 also hits 1e-12.  However, a separate
+phi/psi aliasing error remains: at N=8 the spectrum roundtrip `fft_gl(fft_inv_gl(fhat))`
+shows leakage of ~0.197 to non-DC coefficients for a constant input, and
+single-coefficient roundtrip error of ~0.344 (max over l in [0, N-1]).  The
+worst case is near `|m|, |n| = N-1`, where the error reaches ~3.  Root cause
+is the closed-grid phi/psi fold over-counting endpoints; the `(-1)^{n+m}` phase
+does not undo this for modes near the bandlimit.  Bead `su2fft-0t1` tracks the
+structural fix.
 
-Single-coefficient analytical synthesis IS machine precision (1e-12 to 1e-13):
-if `fhat` has exactly one non-zero entry `(l, m, n)` then `fft_inv(fhat, N)`
-recovers the closed-form sample `t^l_{n,m}(g)` to 1e-12.
-
-The path to an exact spectrum roundtrip is bead `su2fft-ega` (Gauss-Legendre
-theta nodes), which is P1 priority.  Until `ega` lands, applications that
-require `fft(fft_inv(fhat)) ≈ fhat` at tight tolerance should not use the
-current closed-grid pair.
+**Closed-grid roundtrip caveat.**  `SU2FFT.fft(SU2FFT.fft_inv(fhat, N))` is NOT
+machine precision under the closed-grid Riemann theta quadrature.  At N=16 with
+random `fhat`, the relative error is approximately 5.6.  Single-coefficient
+analytical synthesis IS machine precision (1e-12 to 1e-13): if `fhat` has exactly
+one non-zero entry `(l, m, n)` then `fft_inv(fhat, N)` recovers the closed-form
+sample `t^l_{n,m}(g)` to 1e-12.  Applications that require tight spectrum
+roundtrip tolerance should wait on bead `su2fft-0t1` (phi/psi grid resolution).
 
 ### Layout convention
 

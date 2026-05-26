@@ -120,25 +120,48 @@ Acceptance numbers:
 
 Downstream: `su2fft-d7v` (convolution), `su2fft-31x` (QSP), `su2fft-5fb`
 (spherical) are formally unblocked.  Their practical utility waits on
-`su2fft-ega` (item 8 below, now P1).  Pick up `ega` before starting these.
+`su2fft-0t1` (phi/psi grid resolution, item 8b).  Pick up `0t1` before
+starting these.
 
-### 8. Gauss-Legendre nodes in theta -- P1 NEXT (su2fft-ega)
+### ~~8. Gauss-Legendre nodes in theta~~ — DONE (ega)
 
-**This is the top-priority item.**  The exact roundtrip `forward(inverse(fhat))
-= fhat` requires spectral-accuracy theta quadrature.  After 3lx shipped, the
-only remaining barrier to a machine-precision forward+inverse pair is the
-N-point Riemann sum over the closed theta grid, which introduces O(1) relative
-error in the spectrum roundtrip (rel_err ~5.6 at N=16 for random fhat).
+Shipped in bead `su2fft-ega`.  `src/su2_gauss_legendre.c` (~75 LOC) computes
+GL nodes and weights via Newton iteration on P_N.  `src/su2_fft.c` gained
+`su2_fft_gl` and `su2_fft_inv_gl` (~212 LOC appended); `norm_gl = 1/(2N^2)`.
+Julia exports `fft_gl`, `fft_inv_gl`, `gl_nodes_weights`.  34/34 C tests pass
+(was 28); 274/274 Julia tests pass (was 211).
 
-Switching to Gauss-Legendre nodes on [-1, 1] (via FLINT's
-`arb_hypgeom_legendre_p_ui_root`) integrates all Wigner-d polynomials of degree
-up to 2N-1 exactly.  The discrete FT becomes exact for bandlimited inputs;
-`forward(inverse(fhat)) = fhat` to machine precision; the aliasing tail in
-`build/spectrum.png` disappears.  Beads `d7v`, `31x`, `erv`, `5fb` become
-usable at machine precision only after this lands.
+Concrete results at N=8:
+- DC normalisation: `forward(constant) = 1.0` to 1e-12.  Closed grid gave
+  `(N/(N-1))^2 = 1.31`.
+- Analytical synthesis at l=0: 1e-12 residual.
+- `forward(constant)` leakage to other coefficients: max ~0.197.
+- Single-coefficient roundtrip at `(l, m=0, n=0)`: max error ~0.344 over l in [0, N-1].
+- Single-coefficient roundtrip at `(l=N-1, m=±(N-1), n=0)`: error ~3 (worst).
 
-Touches: `src/su2_grid.c` (new grid function), `src/su2_ft.c`, `src/su2_fft.c`
-(replace `sin(theta_k)` weights with GL weights).
+DC is fixed; phi/psi aliasing floor remains.  The structural follow-up is item
+8b below.
+
+### 8b. Phi/psi grid resolution -- P1 NEXT (su2fft-0t1)
+
+**This is now the top-priority item.**  `ega` fixed the theta quadrature but
+the phi/psi Stage 1 still uses the closed-grid fold, which over-counts endpoints
+(`g[0] = f[0] + f[N-1]`).  The `(-1)^{n+m}` phase corrects the half-shift but
+does not eliminate aliasing for modes with `|m|` or `|n|` near `N-1`.  The
+bandlimit demands modes up to `|m|, |n| = N-1` (requiring `2N-1` independent
+frequencies) but the closed N-point phi/psi grid resolves only `~N` modes.
+
+Result: at N=8 GL, single-coefficient roundtrip error at `(l=N-1, m=±(N-1), n=0)`
+is ~3 (O(1)).  This is the remaining barrier to a useful `forward(inverse(fhat)) = fhat`.
+
+Two options: (a) use a `2N-1` point grid in phi/psi, resolving all required
+modes; (b) restrict the bandlimit to `|m|, |n| < N/2`, which keeps the current
+grid but reduces output coefficients.  Either option unblocks application beads
+`su2fft-d7v`, `su2fft-31x`, and `su2fft-5fb` at practical precision.
+
+Touches: `src/su2_fft.c` Stage 1 (phi/psi fold); `include/su2.h` (grid layout
+change if option a); `tests/test_roundtrip.c` (tighten roundtrip tolerance once
+fixed).
 
 ### 9. Open-grid mode (φ, ψ on `[0, 2π)`)
 
@@ -161,7 +184,7 @@ Convolution on a non-abelian group is matrix-valued: `(f ⋆ g)^(l) = f̂(l) · 
 on SO(3) (via the SU(2) → SO(3) quotient), template matching on rotated
 3-D images, group-averaged neural-network layers.
 
-Touches: new `src/su2_convolve.c`, depends on #7 (DONE, 3lx) + #8 (ega, for exact roundtrip).
+Touches: new `src/su2_convolve.c`, depends on #7 (DONE, 3lx) + #8b (su2fft-0t1, for exact spectrum roundtrip).
 
 ### 11. SO(3) FFT via the Z₂ quotient
 
@@ -248,20 +271,20 @@ Touches: new `tests/fuzz.c`; CI hookup.
 
 Bead `su2fft-m21` (three-term recurrence) delivered 90.91x speedup at N=24 and
 the paper's O(N^4) asymptotic.  Bead `su2fft-dyi` (inline `ipow`) added a
-modest ~4% wall improvement; the `pow()` cost was already small post-m21 and
-the seed is now trig-dominated.  Bead `su2fft-t6z` (Julia bindings) shipped
-`SU2FFT.jl` v0.1.0 with 199/199 tests passing and cross-validated to 1e-10 at
-N=6 and N=8.  Bead `su2fft-3lx` (inverse FFT) shipped `su2_fft_inv` (118 LOC
-in `src/su2_fft.c`) + Julia `SU2FFT.fft_inv`; 211/211 Julia tests and 25/25 C
-tests pass.  Analytical synthesis hits 1e-12; spectrum roundtrip under
-closed-grid Riemann is rel_err ~5.6 at N=16 (O(1), not O(1/N^2)) -- the
-honest closed-grid limitation documented in `ALGORITHM.md §3`.
+modest ~4% wall improvement; the seed is now trig-dominated.  Bead `su2fft-t6z`
+(Julia bindings) shipped `SU2FFT.jl` v0.1.0 with 199/199 tests passing.  Bead
+`su2fft-3lx` (inverse FFT) shipped `su2_fft_inv` (118 LOC); 25/25 C tests and
+211/211 Julia tests.  Analytical synthesis hits 1e-12; closed-grid spectrum
+roundtrip is rel_err ~5.6 at N=16.
 
-The top priority is now **`su2fft-ega`** (Gauss-Legendre theta nodes, item 8):
-it closes the roundtrip gap to machine precision and unblocks the application
-beads (`d7v`, `31x`, `erv`, `5fb`) at usable tolerance.  After `ega`, items
-**1b, 2, 3, 4, 15** (trig-sharing, recurrence-coefficient caching, OpenMP,
-SIMD, Python bindings) complete the performance picture.  Items 1b-4 together
-should bring N=24 well below 30 ms per FFT; item 15 (Python bindings) is what
-turns the project from a curiosity into something a researcher actually depends
-on.
+Bead `su2fft-ega` (GL theta nodes) shipped `su2_fft_gl` / `su2_fft_inv_gl`
+(~212 LOC) and `su2_gauss_legendre.c` (~75 LOC).  34/34 C tests, 274/274 Julia
+tests.  DC normalisation is exact (1.0 to 1e-12 vs 1.31 closed-grid at N=8).
+A phi/psi aliasing floor remains: single-coefficient roundtrip error at high
+`|m|, |n|` is O(1).  This is documented; it is not a regression.
+
+The top priority is now **`su2fft-0t1`** (phi/psi grid resolution, item 8b):
+it is the remaining barrier to exact spectrum roundtrip and gates practical use
+of application beads `d7v`, `31x`, `erv`, `5fb`.  After `0t1`, items **1b, 2,
+3, 4, 15** (trig-sharing, recurrence-coefficient caching, OpenMP, SIMD, Python
+bindings) complete the performance picture.
