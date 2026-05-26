@@ -28,6 +28,7 @@ May 2026) or to a deliberate departure from it, which is called out explicitly.
 | `bench/compare.c`                    | Cross-comparison and timing across N.                               |
 | `bench/vis_dump.c` + `visualize.py`  | Spectrum visualisation (paper Figure 1 style).                      |
 | `bench/arb_bench.c`                  | Arb-precision timing vs ball radius at prec = 53/128/256/512.       |
+| `julia/`                             | `SU2FFT.jl` Julia bindings (bead `su2fft-t6z`); see `README.md §Julia bindings`. |
 
 To build everything and run the test battery:
 

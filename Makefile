@@ -9,7 +9,7 @@ OPT       ?= -O2 -g
 INCLUDES  := -Iinclude -I/usr/include
 DEFINES   := -D_GNU_SOURCE
 LIBS      := -lfftw3 -lflint -lm
-CFLAGS    := $(CSTD) $(WARN) $(OPT) $(INCLUDES) $(DEFINES)
+CFLAGS    := $(CSTD) $(WARN) $(OPT) $(INCLUDES) $(DEFINES) -fPIC
 
 SRC_DIR   := src
 TEST_DIR  := tests
@@ -25,9 +25,14 @@ TEST_BINS := $(patsubst $(TEST_DIR)/%.c,$(BUILD_DIR)/%,$(TEST_SRCS))
 BENCH_SRCS := $(wildcard $(BENCH_DIR)/*.c)
 BENCH_BINS := $(patsubst $(BENCH_DIR)/%.c,$(BUILD_DIR)/%,$(BENCH_SRCS))
 
-.PHONY: all test bench clean
+.PHONY: all test bench clean lib
 
 all: $(LIB_OBJS) $(TEST_BINS) $(BENCH_BINS)
+
+lib: $(BUILD_DIR)/libsu2.so
+
+$(BUILD_DIR)/libsu2.so: $(LIB_OBJS) | $(BUILD_DIR)
+	$(CC) -shared $(LIB_OBJS) $(LIBS) -o $@
 
 # Compile library objects
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)

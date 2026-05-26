@@ -49,7 +49,10 @@ All four compute the *same discrete sum* (paper line 1316).  Cross-checks in
 
 Bead `su2fft-m21` (ascending-l three-term recurrence) shipped: the double-precision
 fast path is now **honestly O(N^4)**.  90.91x speedup at N=24 vs the O(N^6) direct
-path.  The arb path remains O(N^5).
+path.  The arb path remains O(N^5).  Julia bindings (`SU2FFT.jl`, bead `su2fft-t6z`)
+live at `julia/` and expose the same public API surface via ccall to `libsu2.so`;
+199/199 tests pass including the gold-standard `fft ≈ ft_direct` cross-check at N=6
+and N=8 to 1e-10.
 
 ---
 
@@ -122,6 +125,13 @@ fraction of seed cost.  Empirical result: ~4% wall improvement at N=24 (warm-run
 `bench/compare` ~91x → ~100–108x; `build/profile_stages 24 10` per-FFT wall
 34.3 ms → ~33.0 ms).  Seed % unchanged at 46% — the seed is now
 trig-dominated (`cos(beta/2)` + `sin(beta/2)`), not `pow()`-dominated.
+
+**`su2fft-t6z` shipped.**  Julia bindings (`SU2FFT.jl`) live at `julia/`.
+Makefile gained `-fPIC` and a `build/libsu2.so` shared-library target.
+199/199 Julia tests pass; gold-standard `fft ≈ ft_direct` holds at 1e-10 for
+N=6 and N=8.  Known issue: Julia 1.12 bundles an older `libgmp.so.10`; `__init__`
+pre-loads the system gmp and dlopens libsu2 with `RTLD_DEEPBIND` as a workaround.
+Portable fix is tracked as bead `su2fft-e5z`.
 
 **Recommended first move: `su2fft-xxb` (trig-sharing across the seed pair).**
 Both seed calls at a (m, n, k) triple evaluate `cos(theta_k/2)` and
@@ -259,6 +269,18 @@ improvement ~4% (34.3 ms → ~33.0 ms per FFT at N=24); seed % unchanged at
 original "seed < 20%" criterion was set against the pre-m21 calling pattern
 (O(N^5) calls) and was not achievable post-m21 without trig-sharing
 (`su2fft-xxb`).
+
+**`su2fft-t6z` (Julia bindings) — DONE.**
+- `julia/` ships `SU2FFT.jl` v0.1.0: `SU2FFT.fft`, `SU2FFT.ft_direct`,
+  `SU2FFT.wigner_d`, `SU2FFT.fhat_at`, `SU2FFT.fhat_block`, `SU2FFT.total_coeffs`,
+  `SU2FFT.coeff_offset`, `SU2FFT.libsu2_path`.
+- 199/199 `Pkg.test` tests pass; gold-standard `fft ≈ ft_direct atol=1e-10`
+  verified at N=6 and N=8.
+- Array layout: Julia `f[j2+1, k+1, j1+1]` matches C row-major `f[j1*N*N + k*N + j2]`
+  with no permutation.
+- Linkage workaround: `__init__` pre-loads system `libgmp.so.10` and dlopens
+  `libsu2.so` with `RTLD_DEEPBIND` to avoid ABI conflict with Julia 1.12's
+  bundled libgmp.  Works on Debian/Ubuntu; `su2fft-e5z` tracks the portable fix.
 
 **`su2fft-3lx` (Inverse FFT) — DONE when:**
 - `tests/test_roundtrip.c` exists and shows

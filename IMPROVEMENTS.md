@@ -178,6 +178,24 @@ Touches: thin wrapper, depends on #5 and #7.
 
 ## Tier 4 — engineering polish
 
+### ~~14. Julia bindings (`SU2FFT.jl`)~~ — DONE (t6z)
+
+Shipped in bead `su2fft-t6z`.  `julia/` contains `SU2FFT.jl` v0.1.0 with
+ccall wrappers for `su2_fft`, `su2_ft_direct`, and `su2_wigner_d`, plus
+coefficient accessors (`fhat_at`, `fhat_block`, `total_coeffs`, `coeff_offset`).
+Makefile gained `-fPIC` and a `build/libsu2.so` shared-library target; 18/18 C
+tests still pass.  199/199 Julia tests pass via `Pkg.test`; gold-standard
+`fft ≈ ft_direct atol=1e-10` holds at N=6 and N=8.  Array layout: Julia's
+column-major `f[j2+1, k+1, j1+1]` maps to C row-major `f[j1*N*N + k*N + j2]`
+with no permutation.  Known issue: Julia 1.12 bundled libgmp ABI conflict
+worked around in `__init__` via `RTLD_DEEPBIND`; robust fix tracked as
+`su2fft-e5z`.
+
+Follow-ups not yet filed as beads: arb-precision bindings via Arblib.jl,
+BinaryBuilder packaging for portable distribution (removes Linux-only
+`libfftw3`/`libflint` system-library requirement), macOS `.dylib` support,
+registration to the Julia General registry.
+
 ### 14. Python bindings (`pip install su2fft`)
 
 A `cffi`-based wrapper exposing the 4 public functions, plus NumPy
@@ -213,10 +231,12 @@ Touches: new `tests/fuzz.c`; CI hookup.
 Bead `su2fft-m21` (three-term recurrence) delivered 90.91x speedup at N=24 and
 the paper's O(N^4) asymptotic.  Bead `su2fft-dyi` (inline `ipow`) added a
 modest ~4% wall improvement; the `pow()` cost was already small post-m21 and
-the seed is now trig-dominated.  If we now ship items **1b, 2, 3, 4, 7, 14**
+the seed is now trig-dominated.  Bead `su2fft-t6z` (Julia bindings) shipped
+`SU2FFT.jl` v0.1.0 with 199/199 tests passing and cross-validated to 1e-10 at
+N=6 and N=8.  If we now ship items **1b, 2, 3, 4, 7, 15**
 (renumbered above: trig-sharing, recurrence-coefficient caching, OpenMP, SIMD,
 inverse FFT, Python bindings) the codebase goes from "honest O(N^4)
 implementation that matches the paper" to "the obvious tool you reach for if
 you need an SU(2) FFT".  Items 1b–4 together should bring N=24 well below 30 ms
-per FFT; item 14 (Python bindings) is what turns the project from a curiosity
+per FFT; item 15 (Python bindings) is what turns the project from a curiosity
 into something a researcher actually depends on.

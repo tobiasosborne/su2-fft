@@ -175,6 +175,13 @@ su2-fft/
     arb_bench.c                     # arb-precision timing vs ball radius
     profile_stages.c                # per-stage instrumentation
 
+  julia/                            # SU2FFT.jl — Julia bindings (bead t6z)
+    Project.toml                    # package metadata; deps: Libdl
+    DESIGN.md                       # design brief: layout, linkage, API
+    src/SU2FFT.jl                   # ccall wrappers + accessors
+    deps/build.jl, deps.jl          # local libsu2.so build (run via Pkg.build)
+    test/runtests.jl                # gold-standard cross-check via Pkg.test
+
   build/                            # binaries land here (gitignored)
   .beads/                           # bd issue tracker storage
 ```

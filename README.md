@@ -129,6 +129,51 @@ there, and every departure from the paper is called out explicitly.
 
 ---
 
+## Julia bindings (SU2FFT.jl)
+
+A thin Julia wrapper lives at `julia/`. The package exposes `su2_fft`,
+`su2_ft_direct`, and `su2_wigner_d` as `ccall`s through a locally-built
+`build/libsu2.so`.
+
+### Quick start
+
+```julia
+using Pkg
+Pkg.develop(path="/path/to/su2-fft/julia")
+Pkg.build("SU2FFT")     # builds libsu2.so via make
+Pkg.test("SU2FFT")      # 199 tests; gold-standard fft ≈ ft_direct at 1e-10
+
+using SU2FFT
+N = 8
+f = randn(ComplexF64, N, N, N)   # f[j2+1, k+1, j1+1] = sample at (j1, k, j2)
+fhat_fast   = SU2FFT.fft(f)        # O(N^4)
+fhat_direct = SU2FFT.ft_direct(f)  # O(N^6), reference
+@assert maximum(abs, fhat_fast .- fhat_direct) < 1e-10
+
+# Coefficient access
+fhat_at_l1_m0_n0 = SU2FFT.fhat_at(fhat_fast, 1, 0, 0)
+block_l2         = SU2FFT.fhat_block(fhat_fast, 2)   # (5, 5) view
+```
+
+### Layout convention
+
+C storage `f[j1*N*N + k*N + j2]` (row-major) matches Julia's column-major
+`Array{ComplexF64,3}` of shape `(N, N, N)` indexed `f[j2+1, k+1, j1+1]`.
+No permutation needed for ccall. Coefficients are returned as a flat
+`Vector{ComplexF64}` of length `total_coeffs(N) = sum_{l=0..N-1}(2l+1)^2`;
+accessors handle the (l, m, n) offset arithmetic.
+
+### Status
+
+First cut: double-precision only, Linux-only (system `libfftw3` + `libflint`).
+Known linkage workaround for Julia 1.12 bundled libgmp / system libflint ABI
+mismatch is in `__init__`. See bead `su2fft-e5z` for the robust-fix plan.
+
+Follow-ups: arb-precision bindings (Arblib.jl), BinaryBuilder for portable
+distribution, macOS `.dylib`, registration to the Julia General registry.
+
+---
+
 ## Observed results
 
 ### Cross-comparison (direct vs fast, `make bench`)
