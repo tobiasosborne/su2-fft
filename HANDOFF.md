@@ -1,0 +1,267 @@
+# Handoff — for the next agent picking up this project
+
+You are inheriting a working, tested, documented C implementation of the FFT
+on SU(2) (arxiv 2605.23923).  Read this file first.  It is the shortest
+path to productive work.
+
+---
+
+## 0. Five-minute orientation
+
+```
+README.md         <-- what the project is and why anyone cares (read first)
+ALGORITHM.md      <-- canonical math + code narrative (read second)
+PROFILING.md      <-- where the cycles go (read before optimising)
+IMPROVEMENTS.md   <-- the prioritised roadmap (read before picking work)
+HANDOFF.md        <-- this file
+```
+
+Repo: https://github.com/tobiasosborne/su2-fft (public, AGPL-3.0).
+Paper (third-party, NOT in repo; fetch with `curl -L -o source.tar.gz https://arxiv.org/e-print/2605.23923 && tar -xzf source.tar.gz` if you need line-by-line refs):
+https://arxiv.org/abs/2605.23923 — Delgado et al., May 2026.
+
+To verify nothing rotted before you start:
+
+```sh
+make test                  # 17 tests, 5 binaries; takes ~5 s
+make bench && build/compare  # benchmark sweep, ~3 s
+```
+
+If those don't both end in `ALL TESTS PASSED` + a clean table, **fix that
+first**.  Do not start new work on a broken baseline.
+
+---
+
+## 1. Architecture in one paragraph
+
+Four implementations of the same algorithm:
+
+| path           | precision        | hot stage 1            | hot stage 2          |
+|----------------|------------------|------------------------|----------------------|
+| `su2_ft_direct`| double           | --                     | brute O(N^6)         |
+| `su2_fft`      | double           | FFTW3 2-D backward     | O(N^5) wigner-bound  |
+| `su2_ft_direct_arb` | arb (acb_t) | --                     | brute O(N^6)         |
+| `su2_fft_arb`  | arb (acb_t)      | `acb_dft_prod` + conj  | O(N^5) wigner-bound  |
+
+All four compute the *same discrete sum* (paper line 1316).  Cross-checks in
+`tests/test_fft.c` (double-direct vs double-fft) and `tests/test_arb.c`
+(arb-direct vs arb-fft, plus arb vs double) lock that down to ~1e-10.
+
+The fast paths are **honestly O(N^5)** today, not O(N^4) — see PROFILING.md
+and the first bead `su2fft-m21`.
+
+---
+
+## 2. The conventions you will trip over
+
+These are non-obvious and the lab notebook is them.  Each is also called out
+in source comments at point of use.
+
+1. **Closed grid.**  `phi[j] = -pi + j * 2pi/(N-1)`.  Endpoints `j=0` and
+   `j=N-1` are the *same point* on the torus.  `su2_fft.c` folds them and
+   applies a `(-1)^{n+m}` phase to recover the closed-grid DFT from an
+   `(N-1) x (N-1)` FFTW plan.  If you change the grid, change both fold and
+   phase together.
+
+2. **Paper's P^l_{n,m} vs Sakurai's d^l_{n,m}.**  They differ by a phase:
+   `P^l_{n,m}(cos beta) = i^{m-n} * d^l_{n,m}(beta)`.  The implementation
+   carries Sakurai's real `d` through the de Moivre sum and applies
+   `pow_i(m-n)` at the end.  Get this wrong and the direct/fast cross-check
+   fails by a unit-magnitude factor (it will look "right but rotated").
+
+3. **Factorial table is double, capped at 50 (now 100 in wigner_arb).**
+   `src/su2_wigner.c::fact()` is a precomputed array.  For l > 50 you need
+   either `tgamma` or to enlarge the table.  Tests cover up to l=24
+   indirectly via N=24 in `compare.c`.
+
+4. **`pow(0.0, 0)` returns 1.0** in glibc IEEE 754 mode — this is exploited
+   at the theta=pi endpoint in the unitarity test (see
+   `test_wigner.c::test_wigner_unitarity_columns` which skips endpoints to
+   avoid relying on this).
+
+5. **`acb_dft_prod` is forward DFT.**  Backward is `conj(forward(conj(.)))`.
+   `src/su2_fft_arb.c` does exactly this; do not "simplify" it.
+
+6. **Integer-only l.**  Half-integer support is a substantial change
+   (bead `su2fft-n8e`) — factorials become Gammas, the phi/psi grids
+   become non-periodic on 2pi.  Three downstream beads block on it.
+
+7. **The closed-grid (N/(N-1))^2 factor** is the systematic Riemann error
+   that makes `test_ft_direct_constant` use the modified target `(N/(N-1))^2`
+   rather than 1.0.  This is intrinsic to the paper's grid, not a bug.
+
+---
+
+## 3. How to actually make progress
+
+Beads (`bd`) is the issue tracker.  21 issues, 16 ready, 5 blocked by
+prerequisites.  Mandatory commands:
+
+```sh
+bd ready -p 1            # P1 actionable work (start here)
+bd show <id>             # read the full bead body
+bd update <id> --status in_progress   # claim a bead BEFORE coding
+bd close <id> --reason "shipped in <commit>"  # when done
+bd dep tree <id>         # see prerequisites if blocked
+```
+
+**Recommended first move: `su2fft-m21` (Three-term recurrence over l for
+Wigner kernel).**  Expected ~10x speedup on every N.  Touches one file
+(`src/su2_fft.c` Stage 2).  Tests need no change — the gold standard is
+"matches `su2_ft_direct` to 1e-10", which is invariant under refactoring
+the wigner build.  After this lands, the implementation matches the paper's
+asymptotic for the first time.
+
+The recurrence formula you want is Edmonds 4.5.4 (or equivalently Risbo
+1996 §3) — ascending in l with `l_min = max(|m|, |n|)`.  Two running values
+per (m, n, k); update in O(1) per l-step.  Total Stage-2 cost: O(N^4).
+
+After that lands, bead `su2fft-cvh` (SIMD) unblocks and becomes the next
+move.
+
+---
+
+## 4. The TDD/literate-programming discipline that produced this codebase
+
+This is what the user expects and what kept the cross-comparison clean
+through five rewrites of the Wigner routine.  Don't drop it.
+
+1. **Red first.**  Add a failing test for the property the new code must
+   uphold, *before* writing the new code.  See `tests/test_arb.c` for the
+   pattern: `test_arb_direct_vs_fast` is the gold-standard property
+   ("two implementations agree to floating-point noise on random input").
+
+2. **Read ground truth.**  Before changing a math routine, read the paper
+   line being implemented.  Source comments cite `paper.tex` line numbers;
+   open the paper at that line.  When the paper formula and code don't
+   match, the code is wrong — don't "fix" it by tweaking until tests pass.
+
+3. **Cross-checks > unit tests.**  Each algorithm has at least one
+   independent implementation it agrees with.  Direct vs FFT is the main
+   one; the Wigner closed-form has Legendre P_l as the m=n=0 special case;
+   the arb path has the double path as its prec=53 anchor.  When you add
+   a new path, add its cross-check immediately.
+
+4. **One bead, one PR, one commit.**  Bead `su2fft-m21` should be its own
+   commit message line.  No drive-by cleanup; the diff should be readable
+   in one sitting.  Drive-by improvements go in their own beads first.
+
+5. **Literate updates.**  When you touch the algorithm, update `ALGORITHM.md`.
+   When you touch performance, update `PROFILING.md`.  When you finish a bead
+   that opens up new work, add the new beads with `bd create`.  The
+   document is the contract; if the document is stale, future-you cannot
+   recover state from `git log`.
+
+---
+
+## 5. Style preferences observed from the user
+
+- Concrete numbers always.  "1e-17 max-diff at N=24" not "very accurate".
+- No emojis.  No marketing words.  "Seriously impressive" was the user's
+  own phrasing for the roadmap, but the code itself should read like
+  SQLite / TigerBeetle docs.
+- Cite paper line numbers in source comments.  They survive across the
+  paper being moved out of the public repo.
+- Prefer C11, `-Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes -O2 -g`.
+  These catch real bugs (the `mode_t` collision with sys/types.h that I hit
+  was caught by `-Wshadow`).
+- Don't add features that aren't paid for by a passing test.  Every feature
+  in the codebase right now has a test or a benchmark that exercises it.
+- The user values FLINT explicitly.  Don't suggest replacing the arb path
+  unless you've shipped a measurable improvement first.
+
+---
+
+## 6. Surprises and lessons from this iteration
+
+These cost time when you don't know them.
+
+1. **`pow()` is shockingly expensive.**  60.5% of cycles in
+   `__ieee754_pow_fma` at N=20.  Always reach for repeated-squaring on
+   integer exponents; never call `pow(x, k)` for `k` integer in a hot loop.
+
+2. **The Rodrigues form of P^l_{nm} catastrophically cancels by l~10.**
+   It was the first implementation; it passes tests up to l=8 and silently
+   produces NaNs by l=15.  The de Moivre sum is mathematically equivalent
+   and numerically stable.
+
+3. **Closed-grid samples are not independent.**  The N-point closed grid
+   on a 2pi-periodic angle has rank N-1.  The fold trick recovers a clean
+   FFTW plan; the alternative is a slow O(N^2) DFT.  Half-integer l support
+   will need a different grid entirely (bead `su2fft-n8e`).
+
+4. **`fftw_complex` is layout-compatible with `double _Complex`.**  This
+   isn't documented loudly but FFTW relies on it.  The arb path uses
+   `acb_dft_prod` which is *not* layout-compatible — different storage
+   entirely.
+
+5. **`perf` needs `kernel.perf_event_paranoid <= 2`.**  If you get
+   "Access to performance monitoring and observability operations is
+   limited" run:
+   ```
+   sudo sysctl kernel.perf_event_paranoid=1
+   ```
+   For senior-level profiling you also want call-graph sampling at high
+   rate: `perf record -F 4000 -e cpu_core/cycles/ -g`.  On Intel hybrid
+   CPUs you must specify `cpu_core` or you'll get a useless 12-sample
+   trace from the efficiency cluster.
+
+6. **`bd create` accepts `-f markdown_file` for batch input.**  If you have
+   many issues to register at once, write them as a markdown file with one
+   heading per issue and pipe it in.  This is much faster than 16 shell
+   commands.
+
+7. **The af proof workspace under `proof/` is reference-only.**  The user
+   explicitly said "no need to run verifiers, the af tree is for reference
+   purposes".  Don't spend time validating it.
+
+---
+
+## 7. What "done" looks like for the top priorities
+
+If you ship one bead per day for two weeks, you can credibly claim the
+implementation matches the paper.  Concrete acceptance for the first few:
+
+**`su2fft-m21` (Wigner recurrence) — DONE when:**
+- `tests/test_fft.c::test_fft_matches_direct_random` still passes
+  at the same 1e-10 tolerance.
+- `bench/profile_stages` reports `wigner build` < 30% of total at N=24.
+- `bench/compare` at N=24 shows direct/fast ratio > 50x (currently 10x).
+- New stage timings noted in PROFILING.md.
+
+**`su2fft-3lx` (Inverse FFT) — DONE when:**
+- `tests/test_roundtrip.c` exists and shows
+  `||su2_fft_inv(su2_fft(f)) - f|| < 1e-12` at N=8, 16, 24.
+- Three downstream beads (`su2fft-d7v`, `su2fft-31x`, `su2fft-5fb`)
+  unblock automatically (`bd dep tree <id>` shows them ready).
+
+**`su2fft-n8e` (Half-integer l) — DONE when:**
+- A new test verifies the spin-1/2 representation explicitly:
+  for `f(g) = u_{00}(g) = e^{i(phi+psi)/2} cos(theta/2)` (the (0,0)
+  entry of the defining rep, paper line 503), `fhat(1/2)[0,0]` is the
+  expected scalar to ~1e-10.
+- Two downstream beads (`su2fft-erv`, `su2fft-5fb`) unblock.
+
+---
+
+## 8. Things explicitly out of scope unless the user asks
+
+- Replacing FFTW3 with anything else (user wants FFTW3 + FLINT).
+- Replacing FLINT with anything else (user explicitly stated preference).
+- Adding a custom DSL or build system (Makefile is enough).
+- Rewriting in Rust / Zig / C++ (user wrote this in C deliberately).
+- The af proof workspace (reference only; do not modify).
+
+If a bead requires touching one of these, surface the question first and
+wait for an answer.
+
+---
+
+## 9. Where the user is reachable for ambiguities
+
+Pull requests / issues at https://github.com/tobiasosborne/su2-fft .
+For paper-math disambiguation, the paper itself plus the four notes/
+summaries under `notes/` give independent renderings of every key formula.
+When the paper and a note disagree, the paper is canonical.
+
+Welcome aboard.
