@@ -109,9 +109,9 @@ include/su2.h              Public API and storage-layout contract
 src/su2_grid.c             Euler-angle grid, coefficient layout helpers
 src/su2_wigner.c           Stable Wigner small-d via the de Moivre sum
 src/su2_ft.c               Direct O(N^6) reference Fourier transform
-src/su2_fft.c              O(N^4) fast Fourier transform (double precision)
+src/su2_fft.c              O(N^4) fast Fourier transform (double precision): su2_fft (forward) and su2_fft_inv (inverse)
 src/su2_{wigner,ft,fft}_arb.c   FLINT arb/acb arbitrary-precision parallel path
-tests/test_*.c             TDD red/green checks for every piece
+tests/test_*.c             TDD red/green checks for every piece (includes test_roundtrip.c: 7 tests for su2_fft_inv)
 bench/compare.c            Cross-comparison and timing at each N
 bench/vis_dump.c           Spectrum dump in Python-readable format
 bench/visualize.py         Matplotlib spectrum plot
@@ -141,19 +141,41 @@ A thin Julia wrapper lives at `julia/`. The package exposes `su2_fft`,
 using Pkg
 Pkg.develop(path="/path/to/su2-fft/julia")
 Pkg.build("SU2FFT")     # builds libsu2.so via make
-Pkg.test("SU2FFT")      # 199 tests; gold-standard fft ≈ ft_direct at 1e-10
+Pkg.test("SU2FFT")      # 211 tests; gold-standard fft ≈ ft_direct at 1e-10
 
 using SU2FFT
 N = 8
 f = randn(ComplexF64, N, N, N)   # f[j2+1, k+1, j1+1] = sample at (j1, k, j2)
-fhat_fast   = SU2FFT.fft(f)        # O(N^4)
+fhat_fast   = SU2FFT.fft(f)        # O(N^4) forward
 fhat_direct = SU2FFT.ft_direct(f)  # O(N^6), reference
 @assert maximum(abs, fhat_fast .- fhat_direct) < 1e-10
+
+# Inverse FFT (Peter-Weyl synthesis): reconstruct f from fhat
+f_reconstructed = SU2FFT.fft_inv(fhat_fast, N)   # O(N^4)
+
+# Layout: f_reconstructed[j2+1, k+1, j1+1] = sample at Euler grid (j1, k, j2)
+# Same indexing convention as the input array above.
 
 # Coefficient access
 fhat_at_l1_m0_n0 = SU2FFT.fhat_at(fhat_fast, 1, 0, 0)
 block_l2         = SU2FFT.fhat_block(fhat_fast, 2)   # (5, 5) view
 ```
+
+**Spectrum roundtrip caveat.**  `SU2FFT.fft(SU2FFT.fft_inv(fhat, N))` is NOT
+machine precision under the current closed-grid Riemann theta quadrature.  At
+N=16 with random `fhat`, the relative error is approximately 5.6 (O(1), not
+O(1/N^2)).  The root cause is that Wigner-d polynomials of degree up to N-1
+are not exactly integrated by N Riemann nodes on the closed theta grid; the
+forward analysis is lossy even for bandlimited inputs.
+
+Single-coefficient analytical synthesis IS machine precision (1e-12 to 1e-13):
+if `fhat` has exactly one non-zero entry `(l, m, n)` then `fft_inv(fhat, N)`
+recovers the closed-form sample `t^l_{n,m}(g)` to 1e-12.
+
+The path to an exact spectrum roundtrip is bead `su2fft-ega` (Gauss-Legendre
+theta nodes), which is P1 priority.  Until `ega` lands, applications that
+require `fft(fft_inv(fhat)) ≈ fhat` at tight tolerance should not use the
+current closed-grid pair.
 
 ### Layout convention
 

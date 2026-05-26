@@ -22,7 +22,7 @@ May 2026) or to a deliberate departure from it, which is called out explicitly.
 | `src/su2_grid.c`                     | Euler-angle grid, coefficient layout helpers.                       |
 | `src/su2_wigner.c`                   | Stable evaluation of paper's P^l_{n,m}(cos theta).                  |
 | `src/su2_ft.c`                       | Direct O(N^6) reference Fourier transform.                          |
-| `src/su2_fft.c`                      | O(N^4) fast Fourier transform (double precision).                   |
+| `src/su2_fft.c`                      | O(N^4) fast FFT (double, forward `su2_fft` + inverse `su2_fft_inv`). |
 | `include/su2_arb.h`, `src/su2_*_arb.c` | FLINT arb/acb arbitrary-precision parallel path.                  |
 | `tests/test_*.c`                     | Red/green TDD checks for each piece.                                |
 | `bench/compare.c`                    | Cross-comparison and timing across N.                               |
@@ -164,7 +164,7 @@ matching the paper's headline complexity for the first time.
 
 **Phase identity.**  The paper's P^l_{n,m} and Sakurai's real Wigner small-d
 are related by `P^l_{n,m}(cos beta) = i^{m-n} * d^l_{n,m}(beta)` (see
-Section 4 of this file).  Taking the conjugate:
+Section 5 of this file).  Taking the conjugate:
 
 ```
 conj(P^l_{n,m}(cos beta)) = i^{n-m} * d^l_{n,m}(beta)
@@ -239,7 +239,127 @@ analysis); `PROFILING.md` (stage timings and hot-path breakdown).
 
 ---
 
-## 3. Why this works
+## 3. Inverse FFT -- Peter-Weyl synthesis (`src/su2_fft.c::su2_fft_inv`)
+
+Bead `su2fft-3lx` appended `su2_fft_inv` (118 LOC) to `src/su2_fft.c`.
+The function inverts the forward transform: given the coefficient array `fhat`
+it reconstructs `f` on the Euler-angle grid.
+
+### 3.1 The synthesis formula
+
+By the Peter-Weyl theorem (paper line 554), any square-integrable function on
+SU(2) has the expansion
+
+```
+f(g) = sum_{l=0}^{N-1} (2l+1) *
+       sum_{m=-l}^{l} sum_{n=-l}^{l}
+           fhat(l)_{m,n} * t^l_{n,m}(g)             (Peter-Weyl completeness)
+```
+
+with `t^l_{n,m}(phi, theta, psi) = P^l_{n,m}(cos theta) * exp(-i(n phi + m psi))`
+(line 534).  Substituting `P^l_{n,m} = i^{m-n} * d^l_{n,m}` and rearranging:
+
+```
+f(g_{j1,k,j2}) = sum_{l} (2l+1) * sum_{m,n}
+                     fhat(l)_{m,n} * i^{m-n}
+                     * d^l_{n,m}(theta_k)
+                     * exp(-i n phi[j1]) * exp(-i m psi[j2])
+```
+
+### 3.2 Two-stage structure
+
+The algorithm mirrors the forward FFT but reverses the stage order.
+
+**Stage 2-inv -- Wigner sweep (spectrum -> theta slices).** For each theta
+slice `k`, accumulate
+
+```
+G[k, n, m] = sum_{l} (2l+1) * fhat(l)_{m,n} * i^{m-n} * d^l_{n,m}(theta_k)
+```
+
+The `i^{m-n}` phase is **positive** `m-n`, matching the synthesis direction
+(contrast the forward Stage 2 conjugate side which carries `i^{n-m}`).  For
+each fixed `(n, m)` the l-sum walks the same ascending-l recurrence as the
+forward path (`su2_wigner_d_seq`), loading the recurrence values once per k
+and sweeping l.  Cost: O(N^4) across all (n, m, k).
+
+**Stage 1-inv -- 2-D forward FFTW per theta slice.** Given `G[k, n, m]`,
+compute
+
+```
+f(g_{j1,k,j2}) = sum_{n,m} G[k, n, m] * exp(-i n phi[j1]) * exp(-i m psi[j2])
+```
+
+This is a 2-D DFT with a negative-frequency kernel -- FFTW's `FFTW_FORWARD`
+plan.  The same closed-grid fold and `(-1)^{n+m}` half-shift bookkeeping from
+Stage 1-forward apply here in reverse: the `(N-1)x(N-1)` FFTW plan is used,
+the fold combines the last Fourier mode into the first, and the result is
+un-folded back to the N-point closed grid.  Cost: O(N^3 log N) total.
+
+### 3.3 Correctness: what is and is not machine precision
+
+Two regimes must be distinguished.
+
+**Analytical synthesis -- machine precision.**  Tests in `tests/test_roundtrip.c`
+that construct a single-coefficient `fhat` (all zeros except one `(l,m,n)` entry)
+and evaluate the synthesis formula directly match the closed-form sample
+`t^l_{n,m}(g)` to `1e-12` to `1e-13` residual.  A constant function
+(`fhat(0)_{0,0} = 1 / sqrt(8 pi^2)`) is recovered exactly, linearity holds to
+machine precision, and the `(2l+1)` Plancherel weight is verified explicitly.
+
+**Spectrum roundtrip -- NOT machine precision under closed-grid Riemann
+quadrature.**  The composition `forward(inverse(fhat))` does not return `fhat`
+at small residual.  At N=16 with random `fhat`, the relative error is
+approximately 5.6 -- O(1), not O(1/N^2).  The reason is that the forward
+analysis step integrates Wigner-d polynomials of degree up to N-1 with an
+N-point Riemann sum over the closed theta grid; polynomials of degree N-1 are
+not exactly integrated by N Riemann nodes.  The closed-grid theta quadrature
+is a lossy analysis even for bandlimited inputs.  See
+`notes/inverse_fft.md §2` for the explicit residual calculation.
+
+This is the same `(N/(N-1))^2` systematic error that appears in the forward
+path (see `HANDOFF.md §2.7`) -- the inverse amplifies it because the synthesis
+is evaluated on the same grid.  The analytic one-coefficient tests pass at
+machine precision because they bypass the forward analysis step entirely.
+
+**Path to exact roundtrip: bead `su2fft-ega`.**  Replacing the closed-grid
+Riemann theta nodes with Gauss-Legendre nodes integrates all Wigner-d
+polynomials of degree up to 2N-1 exactly.  After `ega` lands, the forward +
+inverse pair will round-trip at machine precision on bandlimited inputs.
+Until then, applications that require `forward(inverse(fhat)) = fhat` to
+better than O(1) relative error should wait on `ega`.
+
+### 3.4 Test coverage (`tests/test_roundtrip.c`)
+
+Seven tests, all passing.  The C suite grows from 18 to 25 tests with
+`test_roundtrip` included.
+
+| test                        | what it checks                            | residual     |
+|-----------------------------|-------------------------------------------|--------------|
+| `test_inv_delta_l0`         | constant synthesis, analytical            | ~1e-15       |
+| `test_inv_delta_l1`         | l=1 single-coefficient synthesis          | ~1e-12       |
+| `test_inv_linearity`        | a*fhat1 + b*fhat2 reconstructed linearly  | ~1e-12       |
+| `test_inv_plancherel`       | `(2l+1)` weight applied correctly         | ~1e-12       |
+| `test_inv_delta_hightest`   | l=N-1 single-coefficient, max-degree test | ~1e-12       |
+| `test_roundtrip_spectrum`   | `forward(inverse(fhat))` at N=16          | rel_err ~5.6 |
+| `test_roundtrip_spectrum_8` | same at N=8                               | rel_err ~5-7 |
+
+The last two tests document the closed-grid Riemann floor and pass with a
+tolerance of 10.0, not 1e-10.  They exist to pin the known limitation, not to
+claim precision.
+
+### 3.5 Downstream beads
+
+Beads `su2fft-d7v` (convolution), `su2fft-31x` (QSP primitives), and
+`su2fft-5fb` (spherical-harmonic FFT) are **formally unblocked** by 3lx --
+their dependency on `su2_fft_inv` is satisfied.  Their **practical utility**
+waits on `su2fft-ega`: until the exact roundtrip lands, spectrum-domain
+round-trips carry O(1) relative error, which is insufficient for convolution
+or QSP inversion.
+
+---
+
+## 4. Why this works
 
 The reduction from O(N^6) to O(N^4) is one observation:
 
@@ -263,7 +383,7 @@ worse than the `k = 1` result already used here (paper line 1612).
 
 ---
 
-## 4. Wigner small-d / paper's P^l_{n,m}
+## 5. Wigner small-d / paper's P^l_{n,m}
 
 `src/su2_wigner.c` evaluates the paper's `P^l_{n,m}(cos theta)`.  A literal
 implementation of the Rodrigues form (binomial expansion + Horner) was the
@@ -307,7 +427,7 @@ Tests in `tests/test_wigner.c` lock down four invariants:
 
 ---
 
-## 5. TDD record
+## 6. TDD record
 
 The test files were written before each corresponding implementation file.
 The order in which red-then-green cycles were closed:
@@ -326,7 +446,7 @@ input.  `bench/compare.c` extends this to larger N and reports timing.
 
 ---
 
-## 6. Observed cross-comparison
+## 7. Observed cross-comparison
 
 A sample `make bench` run on this host (post-m21, Stage 2 uses the ascending-l
 recurrence; see Section 2.3):
@@ -356,7 +476,7 @@ still four orders of magnitude inside the tolerance.  The speedup at N=24 is
 
 ---
 
-## 7. Library use
+## 8. Library use
 
 Per `notes/library_evaluation.md`:
 
@@ -376,7 +496,7 @@ GSL / MPFR / SHTns are not used: every routine they would provide is also in
 FLINT, and bringing in extra runtime dependencies bought nothing for this
 project.
 
-### 7.1 Observed arb-precision behaviour
+### 8.1 Observed arb-precision behaviour
 
 `make bench` also runs `bench/arb_bench`, which times the arb FFT and reports
 the worst-case ball radius across all output coefficients:
@@ -404,7 +524,7 @@ one or two FFT levels.
 
 ---
 
-## 8. Departures from the paper
+## 9. Departures from the paper
 
 1. **Closed-grid FFT.**  The paper uses `phi[j1] = -pi + j1 * 2pi/(N-1)` which
    places samples at both `-pi` and `+pi`.  Standard FFTs assume an "open"

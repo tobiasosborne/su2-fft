@@ -106,4 +106,29 @@ void su2_fft(int N,
              const double _Complex *f,
              double _Complex *fhat);
 
+/* ------- Inverse FFT (Peter-Weyl synthesis) -------
+ * Cost: O(N^4) -- mirrors su2_fft structurally.
+ *
+ * Computes f from fhat via the Peter-Weyl synthesis:
+ *   f(g) = sum_l (2l+1) sum_{m,n} fhat(l)_{m,n} * t^l_{n,m}(g)
+ *
+ * Stage 2-inv: per (m,n), Wigner recurrence sweeps l producing
+ *   G[k,n,m] = i^{m-n} * sum_l (2l+1) * fhat(l)_{m,n} * d^l_{n,m}(theta_k)
+ * Stage 1-inv: per theta slice, 2D FORWARD FFTW (size (N-1)x(N-1))
+ *   with the closed-grid fold trick mirrored from Stage 1.
+ *
+ * Tolerance: this is the exact discrete synthesis. The roundtrip
+ *   ||fft_inv(fft(f)) - f||
+ * is bounded BELOW by the closed-grid Riemann theta quadrature error
+ * (~(N/(N-1))^2 at l=0; higher for higher l). For exact roundtrip,
+ * use Gauss-Legendre theta nodes (bead su2fft-ega).
+ *
+ * @param[in]  N     Bandlimit.
+ * @param[in]  fhat  Length-su2_total_coeffs(N) complex coefficient array.
+ * @param[out] f     Length-N^3 complex sample array, row-major (j1, k, j2).
+ */
+void su2_fft_inv(int N,
+                 const double _Complex *fhat,
+                 double _Complex *f);
+
 #endif /* SU2_H */

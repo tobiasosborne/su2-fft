@@ -177,3 +177,123 @@ void su2_fft(int N,
     free(F2);
     free(theta);
 }
+
+/**
+ * @brief Inverse of su2_fft via Peter-Weyl synthesis.
+ *
+ * Structurally symmetric with su2_fft:
+ *   Stage 2-inv: For each (m, n), sweep l = l_min..N-1 via the recurrence;
+ *     accumulate G[k, n, m] = i^{m-n} * sum_l (2l+1) * fhat(l)_{m,n} * d^l_{n,m}(theta_k).
+ *   Stage 1-inv: For each theta slice k, take G[k, ., .] and 2D FFTW FORWARD
+ *     of size (N-1)x(N-1) with the same (-1)^{n+m} fold trick (reversed direction).
+ *
+ * The phase factor here is i^{m-n} (positive m-n), in contrast to su2_fft's
+ * i^{n-m} (which came from conj(P^l_{n,m})). See notes/inverse_fft.md §3.
+ *
+ * The 2D FFTW direction is FORWARD here vs BACKWARD in su2_fft, because the
+ * synthesis evaluates exp(-i*n*phi - i*m*psi) which is the FFTW FORWARD index
+ * direction; see notes/inverse_fft.md §3.
+ *
+ * @par Complexity O(N^4); O(N^3) auxiliary memory for G.
+ * @par Reference notes/inverse_fft.md; paper.tex Peter-Weyl synthesis (line 554).
+ */
+void su2_fft_inv(int N,
+                 const double _Complex *fhat,
+                 double _Complex *f)
+{
+    if (N < 2 || !fhat || !f) return;
+
+    const int M = N - 1;
+    double *theta = su2_grid_theta(N);
+
+    /* ---- Stage 2-inv ----
+     * For each (m, n), sweep l = l_min..N-1 with the recurrence; compute G[k, n, m].
+     * paper.tex line 554: f(g) = sum_l (2l+1) sum_{m,n} fhat(l)_{mn} t^l_{nm}(g).
+     * t^l_{nm}(g) = exp(-i(n*phi + m*psi)) * P^l_{n,m}(cos theta),
+     * with P^l_{n,m} = i^{m-n} * d^l_{n,m} (HANDOFF.md §2 item 2).
+     */
+    const int    nrange   = 2 * N - 1;
+    const size_t stride_n = (size_t)nrange;
+    const size_t stride_k = (size_t)nrange * (size_t)nrange;
+    double _Complex *G = malloc((size_t)N * stride_k * sizeof(double _Complex));
+
+    /* Per-(m,n) scratch. */
+    double *d_seq = malloc((size_t)N * sizeof(double));
+
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > N - 1) continue;
+
+            /* Apply i^{m-n} phase (positive m-n; the +i^{m-n} of P^l_{n,m}). */
+            int r = ((m - n) % 4 + 4) % 4;
+            double _Complex phase;
+            switch (r) {
+                case 0:  phase =  1.0 + 0.0*I; break;
+                case 1:  phase =  0.0 + 1.0*I; break;
+                case 2:  phase = -1.0 + 0.0*I; break;
+                default: phase =  0.0 - 1.0*I; break;
+            }
+
+            /* For each k: compute G[k, n, m] = phase * sum_l (2l+1) * fhat(l)_{m,n} * d^l(theta_k). */
+            for (int k = 0; k < N; ++k) {
+                su2_wigner_d_seq(l_min, N - 1, n, m, theta[k], d_seq);
+                double _Complex acc = 0.0 + 0.0*I;
+                for (int l = l_min; l < N; ++l) {
+                    double _Complex coef = fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)];
+                    acc += (double)(2*l + 1) * coef * d_seq[l - l_min];
+                }
+                G[(size_t)k * stride_k
+                  + (size_t)(n + N - 1) * stride_n
+                  + (size_t)(m + N - 1)] = phase * acc;
+            }
+        }
+    }
+
+    /* ---- Stage 1-inv ----
+     * 2D FFTW FORWARD of G[k, ., .] -> f[j1, k, j2] per theta slice.
+     * Use the same (-1)^{n+m} fold trick as the forward stage; the
+     * "fold" direction here aliases (n, m) modes mod M into the FFTW grid.
+     * See ALGORITHM.md §2.2 / notes/inverse_fft.md §3.
+     */
+    fftw_complex *G_slice = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
+    fftw_complex *f_slice = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
+    fftw_plan plan  = fftw_plan_dft_2d(M, M, G_slice, f_slice, FFTW_FORWARD, FFTW_ESTIMATE);
+
+    for (int k = 0; k < N; ++k) {
+        memset(G_slice, 0, sizeof(fftw_complex) * (size_t)M * (size_t)M);
+
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int n_mod = ((n % M) + M) % M;
+            double sn = (n & 1) ? -1.0 : 1.0;       /* (-1)^n */
+            for (int m = -(N - 1); m <= N - 1; ++m) {
+                int m_mod = ((m % M) + M) % M;
+                double sm = (m & 1) ? -1.0 : 1.0;   /* (-1)^m */
+                G_slice[(size_t)n_mod * (size_t)M + (size_t)m_mod]
+                    += sn * sm * G[(size_t)k * stride_k
+                                   + (size_t)(n + N - 1) * stride_n
+                                   + (size_t)(m + N - 1)];
+            }
+        }
+        fftw_execute(plan);
+
+        /* Distribute f_slice -> f[j1, k, j2] for j1, j2 in [0, N-1]; the closed
+         * grid sets f[N-1, k, j2] = f[0, k, j2] (and similarly in j2). */
+        for (int j1 = 0; j1 < N; ++j1) {
+            int j1m = (j1 == N - 1) ? 0 : j1;
+            for (int j2 = 0; j2 < N; ++j2) {
+                int j2m = (j2 == N - 1) ? 0 : j2;
+                f[su2_sample_index(N, j1, k, j2)] =
+                    f_slice[(size_t)j1m * (size_t)M + (size_t)j2m];
+            }
+        }
+    }
+
+    fftw_destroy_plan(plan);
+    fftw_free(G_slice);
+    fftw_free(f_slice);
+
+    free(d_seq);
+    free(G);
+    free(theta);
+}

@@ -34,6 +34,7 @@ include(DEPS_FILE)
 # documented in bead su2fft-e5z.
 const _LIBSU2_HANDLE     = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FFT           = Ref{Ptr{Cvoid}}(C_NULL)
+const _SYM_FFT_INV       = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_FT_DIRECT     = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_WIGNER_D      = Ref{Ptr{Cvoid}}(C_NULL)
 const _SYM_TOTAL_COEFFS  = Ref{Ptr{Cvoid}}(C_NULL)
@@ -55,13 +56,14 @@ function __init__()
     flags = Libdl.RTLD_NOW | Libdl.RTLD_GLOBAL | Libdl.RTLD_DEEPBIND
     _LIBSU2_HANDLE[]    = Libdl.dlopen(LIBSU2, flags)
     _SYM_FFT[]          = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft)
+    _SYM_FFT_INV[]      = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_fft_inv)
     _SYM_FT_DIRECT[]    = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_ft_direct)
     _SYM_WIGNER_D[]     = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_wigner_d)
     _SYM_TOTAL_COEFFS[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_total_coeffs)
     _SYM_COEFF_OFFSET[] = Libdl.dlsym(_LIBSU2_HANDLE[], :su2_coeff_offset)
 end
 
-export fft, ft_direct, wigner_d, total_coeffs, coeff_offset,
+export fft, ft_direct, fft_inv, wigner_d, total_coeffs, coeff_offset,
        fhat_at, fhat_block, libsu2_path
 
 # ----- Coefficient layout helpers (ccall to C) -----
@@ -142,6 +144,36 @@ function ft_direct(f::Array{ComplexF64,3})::Vector{ComplexF64}
           (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
           N, f, fhat)
     return fhat
+end
+
+"""
+    fft_inv(fhat::AbstractVector{ComplexF64}, N::Integer) -> Array{ComplexF64,3}
+
+Peter-Weyl synthesis (inverse of `fft`). Given a flat coefficient vector
+`fhat` of length `total_coeffs(N)`, reconstructs samples `f` on the
+Euler-angle grid as a Julia `Array{ComplexF64,3}` of shape `(N, N, N)`
+with the same layout convention as `fft`:
+`f[j2+1, k+1, j1+1] = sample at Euler-grid (j1, k, j2)`.
+
+Wraps `su2_fft_inv`.
+
+**Tolerance note.** The synthesis is the mathematically exact discrete
+Peter-Weyl sum. However, the spectrum roundtrip `fft(fft_inv(fhat))`
+does NOT recover `fhat` to machine precision under the current
+closed-grid Riemann theta quadrature: the relative error is O(1) for
+random full-bandwidth `fhat`. The analytical synthesis (e.g.
+`fft_inv` of a single coefficient) does match the closed-form to ~1e-12.
+Exact roundtrip requires Gauss-Legendre theta nodes (bead `su2fft-ega`).
+"""
+function fft_inv(fhat::AbstractVector{ComplexF64}, N::Integer)::Array{ComplexF64,3}
+    length(fhat) == total_coeffs(N) || throw(ArgumentError(
+        "fhat must have length total_coeffs(N) = $(total_coeffs(N)); got $(length(fhat))"))
+    N >= 2 || throw(ArgumentError("N must be >= 2, got $N"))
+    f = Array{ComplexF64,3}(undef, N, N, N)
+    ccall(_SYM_FFT_INV[], Cvoid,
+          (Cint, Ptr{ComplexF64}, Ptr{ComplexF64}),
+          N, fhat, f)
+    return f
 end
 
 # ----- Pure-Julia accessors over the flat coefficient array -----

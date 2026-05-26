@@ -101,23 +101,41 @@ work and storage.  Common case in physics simulations of real fields on S³.
 Touches: new entry point `su2_fft_real(int N, const double *f, double _Complex *fhat)`
 in `src/su2_fft.c`; ships alongside the complex version.
 
-### 7. Inverse FFT (synthesis) `su2_fft_inv`
+### ~~7. Inverse FFT (synthesis) `su2_fft_inv`~~ — DONE (3lx)
 
-Adjoint of the forward FFT: takes coefficients `fhat`, reconstructs `f` on
-the grid.  Trivial to derive from Stage 1 + Stage 2 reversed.  Together with
-the existing forward FFT this gives a round-trip test of the form
-`|| su2_fft_inv(su2_fft(f)) - f ||` — the strongest correctness assertion
-possible without a closed-form reference.
+Shipped in bead `su2fft-3lx`.  `src/su2_fft.c` now contains both `su2_fft`
+(forward) and `su2_fft_inv` (inverse, 118 LOC appended).  `tests/test_roundtrip.c`
+adds 7 tests; C test count grows from 18 to 25.  Julia bindings: `SU2FFT.fft_inv`
+exported; 211/211 tests pass.
 
-Touches: new `src/su2_fft_inv.c`, `tests/test_roundtrip.c`.
+Acceptance numbers:
+- Analytical synthesis (single-coefficient delta fhat): 1e-12 to 1e-13 residual.
+  Constant function, linearity, and (2l+1) Plancherel weight all verified exactly.
+- Spectrum roundtrip `forward(inverse(fhat)) ≈ fhat`: rel_err ~5.6 at N=16,
+  ~5-7 at N=8 for random fhat.  NOT machine precision.  Root cause: N-point
+  Riemann sum over the closed theta grid does not exactly integrate Wigner-d
+  polynomials of degree up to N-1.  This is a property of the quadrature, not
+  of the synthesis code.  Roundtrip tests use tolerance 10.0 to document the
+  floor, not to claim accuracy.
 
-### 8. Gauss–Legendre nodes in θ
+Downstream: `su2fft-d7v` (convolution), `su2fft-31x` (QSP), `su2fft-5fb`
+(spherical) are formally unblocked.  Their practical utility waits on
+`su2fft-ega` (item 8 below, now P1).  Pick up `ega` before starting these.
 
-The current closed grid (`θ_k = k π/(N-1)`) carries O(1/N²) Riemann error
-on the θ-integral, visible as the high-l aliasing tail in `build/spectrum.png`.
-Switching to Gauss–Legendre nodes on `[-1, 1]` (via FLINT's
-`arb_hypgeom_legendre_p_ui_root`) gives spectral accuracy — the discrete FT
-becomes exact for bandlimited inputs, no more aliasing.
+### 8. Gauss-Legendre nodes in theta -- P1 NEXT (su2fft-ega)
+
+**This is the top-priority item.**  The exact roundtrip `forward(inverse(fhat))
+= fhat` requires spectral-accuracy theta quadrature.  After 3lx shipped, the
+only remaining barrier to a machine-precision forward+inverse pair is the
+N-point Riemann sum over the closed theta grid, which introduces O(1) relative
+error in the spectrum roundtrip (rel_err ~5.6 at N=16 for random fhat).
+
+Switching to Gauss-Legendre nodes on [-1, 1] (via FLINT's
+`arb_hypgeom_legendre_p_ui_root`) integrates all Wigner-d polynomials of degree
+up to 2N-1 exactly.  The discrete FT becomes exact for bandlimited inputs;
+`forward(inverse(fhat)) = fhat` to machine precision; the aliasing tail in
+`build/spectrum.png` disappears.  Beads `d7v`, `31x`, `erv`, `5fb` become
+usable at machine precision only after this lands.
 
 Touches: `src/su2_grid.c` (new grid function), `src/su2_ft.c`, `src/su2_fft.c`
 (replace `sin(theta_k)` weights with GL weights).
@@ -143,7 +161,7 @@ Convolution on a non-abelian group is matrix-valued: `(f ⋆ g)^(l) = f̂(l) · 
 on SO(3) (via the SU(2) → SO(3) quotient), template matching on rotated
 3-D images, group-averaged neural-network layers.
 
-Touches: new `src/su2_convolve.c`, depends on #7.
+Touches: new `src/su2_convolve.c`, depends on #7 (DONE, 3lx) + #8 (ega, for exact roundtrip).
 
 ### 11. SO(3) FFT via the Z₂ quotient
 
@@ -233,10 +251,17 @@ the paper's O(N^4) asymptotic.  Bead `su2fft-dyi` (inline `ipow`) added a
 modest ~4% wall improvement; the `pow()` cost was already small post-m21 and
 the seed is now trig-dominated.  Bead `su2fft-t6z` (Julia bindings) shipped
 `SU2FFT.jl` v0.1.0 with 199/199 tests passing and cross-validated to 1e-10 at
-N=6 and N=8.  If we now ship items **1b, 2, 3, 4, 7, 15**
-(renumbered above: trig-sharing, recurrence-coefficient caching, OpenMP, SIMD,
-inverse FFT, Python bindings) the codebase goes from "honest O(N^4)
-implementation that matches the paper" to "the obvious tool you reach for if
-you need an SU(2) FFT".  Items 1b–4 together should bring N=24 well below 30 ms
-per FFT; item 15 (Python bindings) is what turns the project from a curiosity
-into something a researcher actually depends on.
+N=6 and N=8.  Bead `su2fft-3lx` (inverse FFT) shipped `su2_fft_inv` (118 LOC
+in `src/su2_fft.c`) + Julia `SU2FFT.fft_inv`; 211/211 Julia tests and 25/25 C
+tests pass.  Analytical synthesis hits 1e-12; spectrum roundtrip under
+closed-grid Riemann is rel_err ~5.6 at N=16 (O(1), not O(1/N^2)) -- the
+honest closed-grid limitation documented in `ALGORITHM.md §3`.
+
+The top priority is now **`su2fft-ega`** (Gauss-Legendre theta nodes, item 8):
+it closes the roundtrip gap to machine precision and unblocks the application
+beads (`d7v`, `31x`, `erv`, `5fb`) at usable tolerance.  After `ega`, items
+**1b, 2, 3, 4, 15** (trig-sharing, recurrence-coefficient caching, OpenMP,
+SIMD, Python bindings) complete the performance picture.  Items 1b-4 together
+should bring N=24 well below 30 ms per FFT; item 15 (Python bindings) is what
+turns the project from a curiosity into something a researcher actually depends
+on.

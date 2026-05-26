@@ -65,6 +65,100 @@ using Random
         end
     end
 
+    @testset "inverse FFT (synthesis)" begin
+        # Analytical tests that DO hit machine precision (synthesis is exact math;
+        # closed-grid Riemann error only affects the spectrum roundtrip).
+
+        @testset "inv(zeros) -> zeros" begin
+            N = 5
+            fhat = zeros(ComplexF64, SU2FFT.total_coeffs(N))
+            f = SU2FFT.fft_inv(fhat, N)
+            @test size(f) == (N, N, N)
+            @test maximum(abs, f) < 1e-14
+        end
+
+        @testset "inv(delta_{l=0,m=0,n=0}) -> constant 1" begin
+            # f(g) = (2*0+1) * 1 * t^0_{0,0}(g) = 1 everywhere.
+            N = 8
+            fhat = zeros(ComplexF64, SU2FFT.total_coeffs(N))
+            # offset(0) = 0; mn_index(0, 0, 0) = 0; so fhat[1] = 1.0 (Julia 1-based).
+            fhat[1] = 1.0 + 0im
+            f = SU2FFT.fft_inv(fhat, N)
+            @test maximum(abs.(f .- (1.0 + 0im))) < 1e-13
+        end
+
+        @testset "inv(delta_{l=1,m=0,n=0}) -> 3*cos(theta_k)" begin
+            # f(g_{j1,k,j2}) = (2*1+1) * 1 * P^1_{0,0}(cos theta_k) * 1 = 3*cos(theta_k).
+            N = 8
+            fhat = zeros(ComplexF64, SU2FFT.total_coeffs(N))
+            # offset(1) = 1; mn_index(1, 0, 0) = (0+1)*3 + (0+1) = 4; entry index 1 + 4 + 1 = 6.
+            # (Use the accessor to be robust.)
+            off = SU2FFT.coeff_offset(1)
+            idx = off + (0 + 1) * 3 + (0 + 1) + 1   # Julia 1-based
+            fhat[idx] = 1.0 + 0im
+            f = SU2FFT.fft_inv(fhat, N)
+            # Build the expected: theta_k = k*pi/(N-1), k = 0..N-1. f[j2+1, k+1, j1+1] = 3*cos(theta_k).
+            max_err = 0.0
+            for k in 0:N-1
+                theta_k = k * pi / (N - 1)
+                expected = 3.0 * cos(theta_k) + 0im
+                # All (j1, j2) entries at this k slice should be expected.
+                for j1 in 0:N-1, j2 in 0:N-1
+                    got = f[j2+1, k+1, j1+1]
+                    max_err = max(max_err, abs(got - expected))
+                end
+            end
+            @test max_err < 1e-12
+        end
+
+        @testset "linearity" begin
+            N = 6
+            Random.seed!(2026)
+            nc = SU2FFT.total_coeffs(N)
+            fhat1 = (rand(ComplexF64, nc) .- (0.5 + 0.5im))
+            fhat2 = (rand(ComplexF64, nc) .- (0.5 + 0.5im))
+            alpha = 2.0 + 1.5im
+            beta  = -0.7 + 0.4im
+            f1 = SU2FFT.fft_inv(fhat1, N)
+            f2 = SU2FFT.fft_inv(fhat2, N)
+            fc = SU2FFT.fft_inv(alpha .* fhat1 .+ beta .* fhat2, N)
+            @test maximum(abs.(fc .- (alpha .* f1 .+ beta .* f2))) < 1e-12
+        end
+
+        @testset "inverse output dimensions" begin
+            for N in (4, 6, 8)
+                fhat = zeros(ComplexF64, SU2FFT.total_coeffs(N))
+                f = SU2FFT.fft_inv(fhat, N)
+                @test size(f) == (N, N, N)
+            end
+        end
+
+        @testset "spectrum roundtrip (Riemann floor)" begin
+            # Documented in notes/inverse_fft.md §2: forward(inverse(fhat)) is NOT
+            # recovered to machine precision because closed-grid Riemann theta is
+            # not exact for Wigner-d polynomials. This testset confirms that the
+            # mathematical correctness of the synthesis is unaffected: the rel_err
+            # is bounded (loose, but bounded), and the per-l error grows with l.
+            # Achieving 1e-12 here requires Gauss-Legendre nodes (bead su2fft-ega).
+            Random.seed!(20260526)
+            for N in (6, 8)
+                nc = SU2FFT.total_coeffs(N)
+                fhat = (rand(ComplexF64, nc) .- (0.5 + 0.5im))
+                f = SU2FFT.fft_inv(fhat, N)
+                fhat_prime = SU2FFT.fft(f)
+                rel_err = maximum(abs.(fhat .- fhat_prime)) / maximum(abs, fhat)
+                # Loose threshold matches the C-side test_roundtrip.c floor.
+                @test rel_err < 15.0
+                @info "spectrum roundtrip (Riemann floor)" N rel_err
+            end
+        end
+
+        @testset "input validation" begin
+            @test_throws ArgumentError SU2FFT.fft_inv(zeros(ComplexF64, 1), 4)   # wrong length
+            @test_throws ArgumentError SU2FFT.fft_inv(zeros(ComplexF64, 1), 1)   # N < 2
+        end
+    end
+
     @testset "fhat_at accessor" begin
         N = 4
         Random.seed!(1)

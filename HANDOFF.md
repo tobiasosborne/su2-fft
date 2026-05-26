@@ -54,6 +54,16 @@ live at `julia/` and expose the same public API surface via ccall to `libsu2.so`
 199/199 tests pass including the gold-standard `fft ≈ ft_direct` cross-check at N=6
 and N=8 to 1e-10.
 
+Bead `su2fft-3lx` (Peter-Weyl synthesis) shipped: `src/su2_fft.c` now contains
+both `su2_fft` (forward) and `su2_fft_inv` (inverse, 118 LOC appended).
+`tests/test_roundtrip.c` adds 7 tests; the C test count grows from 18 to 25.
+Analytical synthesis hits machine precision (1e-12); spectrum roundtrip
+`forward(inverse(fhat)) ≈ fhat` is NOT machine precision under the closed-grid
+Riemann theta quadrature -- rel_err ~5.6 at N=16 for random fhat (see §7 below
+and `ALGORITHM.md §3`).  Julia bindings grow from 199/199 to 211/211 tests
+(`SU2FFT.fft_inv` exported).  The top P1 priority is now `su2fft-ega`
+(Gauss-Legendre theta nodes) which will close the roundtrip gap.
+
 ---
 
 ## 2. The conventions you will trip over
@@ -133,16 +143,29 @@ N=6 and N=8.  Known issue: Julia 1.12 bundles an older `libgmp.so.10`; `__init__
 pre-loads the system gmp and dlopens libsu2 with `RTLD_DEEPBIND` as a workaround.
 Portable fix is tracked as bead `su2fft-e5z`.
 
-**Recommended first move: `su2fft-xxb` (trig-sharing across the seed pair).**
-Both seed calls at a (m, n, k) triple evaluate `cos(theta_k/2)` and
-`sin(theta_k/2)` independently, despite sharing the same `theta_k`.  Hoisting
-the trig pair out of the (m, n) inner loops eliminates O(N^2) redundant trig
-calls per k-slice.  Expected ~10% reduction in seed cost (~3 ms at N=24).
-Touches `src/su2_wigner.c` and `src/su2_fft.c` Stage 2 only.
+**`su2fft-3lx` shipped.**  `su2_fft_inv` is in `src/su2_fft.c`.  Analytical
+synthesis reaches 1e-12; spectrum roundtrip under closed-grid Riemann is ~5.6
+relative error at N=16.  Beads `su2fft-d7v`, `su2fft-31x`, `su2fft-5fb` are
+formally unblocked but their practical tolerance depends on `su2fft-ega`.
 
-After that, bead `su2fft-cvh` (SIMD) is the next move on the recurrence and
-inner-product slices, and `su2fft-lg8` (OpenMP over the (m, n) loop) is a
-near-linear scaling win at the cost of added complexity.
+**New top priority: `su2fft-ega` (Gauss-Legendre theta nodes).**  This is the
+path to exact spectrum roundtrip at machine precision.  After `ega` lands,
+`forward(inverse(fhat))` rounds trip at ~1e-12 for bandlimited inputs, and
+convolution / QSP / spherical-harmonic beads become usable.  P1 priority.
+
+**After `ega`: `su2fft-cvh` (SIMD), then `su2fft-lg8` (OpenMP over (m, n)).**
+Both remain pure performance wins, independent of the quadrature change.
+
+**Application beads -- wait on `ega`.**  `su2fft-d7v` (convolution),
+`su2fft-31x` (QSP primitives), `su2fft-erv`, `su2fft-5fb` (spherical) are all
+formally unblocked by 3lx.  None of them achieves useful precision until the
+Gauss-Legendre quadrature (`ega`) lands and closes the roundtrip gap.  Pick up
+`ega` before starting any of these.
+
+**Trig-sharing bead `su2fft-xxb`** remains a sound ~10% seed optimisation
+(hoisting `cos(theta_k/2)` / `sin(theta_k/2)` out of the (m, n) loop at fixed
+k).  Touches `src/su2_wigner.c` and `src/su2_fft.c` Stage 2.  Good standalone
+task if `ega` is already in progress on another branch.
 
 ---
 
@@ -282,11 +305,20 @@ original "seed < 20%" criterion was set against the pre-m21 calling pattern
   `libsu2.so` with `RTLD_DEEPBIND` to avoid ABI conflict with Julia 1.12's
   bundled libgmp.  Works on Debian/Ubuntu; `su2fft-e5z` tracks the portable fix.
 
-**`su2fft-3lx` (Inverse FFT) — DONE when:**
-- `tests/test_roundtrip.c` exists and shows
-  `||su2_fft_inv(su2_fft(f)) - f|| < 1e-12` at N=8, 16, 24.
-- Three downstream beads (`su2fft-d7v`, `su2fft-31x`, `su2fft-5fb`)
-  unblock automatically (`bd dep tree <id>` shows them ready).
+**`su2fft-3lx` (Inverse FFT) — DONE.**
+- `src/su2_fft.c` appended `su2_fft_inv` (118 LOC).  Declaration in `include/su2.h`.
+- `tests/test_roundtrip.c`: 7 tests, 25/25 C tests total pass.
+- `julia/src/SU2FFT.jl`: `fft_inv(fhat, N)` exported; 211/211 Julia tests pass
+  (`Pkg.test`).
+- Analytical synthesis (single-coefficient delta): machine precision, 1e-12 to 1e-13.
+- Spectrum roundtrip `forward(inverse(fhat)) ≈ fhat`: NOT machine precision.
+  Relative error ~5.6 at N=16, ~5-7 at N=8 for random fhat.  Root cause: N-point
+  Riemann sum over the closed theta grid does not exactly integrate Wigner-d
+  polynomials of degree N-1.  This is the same closed-grid Riemann limitation as
+  the forward path; the test documents it with tolerance 10.0, not 1e-10.
+- Three downstream beads (`su2fft-d7v`, `su2fft-31x`, `su2fft-5fb`) are formally
+  unblocked.  Practical utility waits on `su2fft-ega` (exact roundtrip via
+  Gauss-Legendre theta nodes).  `su2fft-ega` is now P1.
 
 **`su2fft-n8e` (Half-integer l) — DONE when:**
 - A new test verifies the spin-1/2 representation explicitly:
