@@ -82,10 +82,10 @@ Touches: `src/su2_fft.c`; optional `src/simd/dot_complex.h` for portability.
 ### ~~5. Half-integer `l` Wigner-d evaluation~~ — DONE Tier 1 (n8e); full FFT = su2fft-u9q (P2)
 
 Bead `su2fft-n8e` Tier 1 shipped `su2_wigner_d_half` in `src/su2_wigner.c`
-(+85 LOC).  The de Moivre sum uses `tgamma` instead of the `fact()` table;
+(+85 LOC).  The de Moivre sum uses `tgamma` for factorial ratios (unbounded);
 args are `2l/2n/2m` (always integers) to avoid FP comparison issues.  38/38
-C tests, 714/714 Julia tests.  Cross-check vs integer-l: max delta 2.22e-16
-(one ULP).  Spin-1/2 closed forms verified at 1e-12.
+C tests, 714/714 Julia tests.  Cross-check vs integer-l `su2_wigner_d`: max
+delta 2.22e-16 (one ULP).  Spin-1/2 closed forms verified at 1e-12.
 
 Tier 2 (bead `su2fft-u9q`, P2) covers the full forward+inverse FFT for
 half-integer `l`.  Required work: (a) 4pi-periodic phi/psi grid

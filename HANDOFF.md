@@ -142,9 +142,17 @@ in source comments at point of use.
    carries Sakurai's real `d` through the de Moivre sum / Wigner recurrence
    and applies `pow_i(m-n)` at the end.
 
-3. **Factorial table capped at 100** (`FACT_MAX` in `src/su2_wigner.c`).
-   `wigner_d_phys` asserts `l <= FACT_MAX`.  Above that, use
-   `su2_wigner_d_half` (which uses `tgamma`) or extend the table.
+3. **Factorial table removed from the double path** (bead `su2fft-258`).
+   `src/su2_wigner.c` no longer has a `fact()` table or a `FACT_MAX` assert.
+   The de Moivre seed coefficient is computed by `demoivre_coeff`, a balanced
+   incremental product that interleaves numerator and denominator factors so
+   the running value stays near 1.0, then takes `sqrt`. The public
+   `su2_wigner_d` routes all evaluations through `su2_wigner_d_seq` (the
+   ascending-l three-term recurrence), seeded at `l_min` where the de Moivre
+   sum has one term (zero cancellation). Stable to high l: resolved-grid
+   roundtrip max relative error N=64 4.6e-14, N=96 1.2e-13 (all finite; was
+   NaN above N~50). The arb path (`su2_wigner_arb.c`) uses `arb_fac_ui`
+   (FLINT, unbounded) and is unchanged.
 
 4. **`pow(0, 0) = 1` in glibc IEEE 754 mode** — exploited at theta=0 and
    theta=pi endpoints in the de Moivre sum.  `ipow(0, 0) = 1` via the

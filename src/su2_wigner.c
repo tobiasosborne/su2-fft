@@ -21,8 +21,16 @@
  *                        [(l+m-t)! t! (n-m+t)! (l-n-t)!]  *
  *                        cos(beta/2)^{2l+m-n-2t} *
  *                        sin(beta/2)^{n-m+2t}
- *     has only O(l) terms, each with bounded factorial ratio.  Numerically
- *     stable up to l ~ 25 in double precision.
+ *     has only O(l) terms.  The per-term factorial ratio is O(1) overall, but
+ *     forming numerator and denominator separately overflows the double range
+ *     at 171!; the alternating sum also cancels catastrophically across O(l)
+ *     terms above l ~ 50 (bead su2fft-258).  Both are cured here:
+ *       (a) wigner_d_phys forms each term coefficient by a BALANCED INCREMENTAL
+ *           PRODUCT that never overflows -- correct for a 1-2-term seed at any l;
+ *       (b) the public su2_wigner_d routes through su2_wigner_d_seq, the stable
+ *           ascending-l recurrence, so the many-term cancelling sum is never
+ *           evaluated above l_min+1.  Stable in double precision for all l up to
+ *           the recurrence range (tested at l = 60, 75, 80 against the arb path).
  *
  * Cost: O(l) per call.  Used by both su2_ft_direct (O(N^6) reference) and the
  * Stage-2 dot products of su2_fft (O(N^4) algorithm).
@@ -33,20 +41,6 @@
 #include <complex.h>
 #include <math.h>
 #include <stdlib.h>
-
-#define FACT_MAX 100
-static double fact(int n)
-{
-    static double tab[FACT_MAX + 1];
-    static int    initd = 0;
-    if (!initd) {
-        tab[0] = 1.0;
-        for (int i = 1; i <= FACT_MAX; ++i) tab[i] = tab[i - 1] * (double)i;
-        initd = 1;
-    }
-    if (n < 0 || n > FACT_MAX) return 0.0;
-    return tab[n];
-}
 
 static double _Complex pow_i(int k)
 {
@@ -74,18 +68,88 @@ static inline double ipow(double x, int k)
     return r;
 }
 
+/* Overflow-free, full-precision coefficient of one de Moivre term.
+ *
+ * paper.tex:537 -- the de Moivre sum has per-term factorial coefficient
+ *   coeff(t) = sqrt[(l+n)!(l-n)!(l+m)!(l-m)!]
+ *            / [(l+m-t)! t! (n-m+t)! (l-n-t)!].
+ * Numerator and denominator have equal total degree (numerator product is
+ * (l+n)+(l-n)+(l+m)+(l-m)=4l integers; the squared denominator is
+ * 2*[(l+m-t)+t+(n-m+t)+(l-n-t)]=4l integers), so coeff is O(1) but overflows
+ * the double range (171!) if either side is formed alone.  Compute
+ *   R = coeff^2 = num! / (den!)^2
+ * as a SINGLE running product, interleaving multiplies by numerator factors
+ * and divides by denominator factors so the running value r stays near 1.0 and
+ * never overflows.  coeff = sqrt(R).  This is the single-term-at-l_min seed;
+ * the balanced product avoids the factorial overflow AND the alternating-sum
+ * cancellation that broke double precision above l~50 (bead su2fft-258).
+ *
+ * num_max / den_max are the largest factors of 2..num_max (numerator multiset)
+ * and 2..den_max (denominator multiset, each contributing TWO copies to R). */
+static double demoivre_coeff(int l, int n, int m, int t)
+{
+    /* Numerator multiset: integers 2..(l+n), 2..(l-n), 2..(l+m), 2..(l-m). */
+    int num_max[4] = { l + n, l - n, l + m, l - m };
+    /* Denominator multiset (each factor squared in R): 2..(l+m-t), 2..t,
+     * 2..(n-m+t), 2..(l-n-t). */
+    int den_max[4] = { l + m - t, t, n - m + t, l - n - t };
+
+    /* Per-group cursors; cursor[g] is the next factor to consume from group g. */
+    int num_cur[4] = { 2, 2, 2, 2 };
+    int den_cur[4] = { 2, 2, 2, 2 };
+
+    double r = 1.0;
+    int progress = 1;
+    while (progress) {
+        progress = 0;
+        if (r <= 1.0) {
+            /* Prefer multiplying by a numerator factor; else divide. */
+            int did = 0;
+            for (int g = 0; g < 4 && !did; ++g) {
+                if (num_cur[g] <= num_max[g]) { r *= (double)num_cur[g]++; did = 1; }
+            }
+            if (!did) {
+                for (int g = 0; g < 4 && !did; ++g) {
+                    /* Two copies per denominator factor (R has den squared). */
+                    if (den_cur[g] <= den_max[g]) {
+                        r /= (double)den_cur[g];
+                        r /= (double)den_cur[g];
+                        ++den_cur[g];
+                        did = 1;
+                    }
+                }
+            }
+            progress = did;
+        } else {
+            int did = 0;
+            for (int g = 0; g < 4 && !did; ++g) {
+                if (den_cur[g] <= den_max[g]) {
+                    r /= (double)den_cur[g];
+                    r /= (double)den_cur[g];
+                    ++den_cur[g];
+                    did = 1;
+                }
+            }
+            if (!did) {
+                for (int g = 0; g < 4 && !did; ++g) {
+                    if (num_cur[g] <= num_max[g]) { r *= (double)num_cur[g]++; did = 1; }
+                }
+            }
+            progress = did;
+        }
+    }
+    return sqrt(r);
+}
+
 /* Physics-convention real Wigner small-d d^l_{n,m}(beta) (Sakurai). */
 static double wigner_d_phys(int l, int n, int m, double beta)
 {
-    assert(l <= FACT_MAX);
-
     int tmin = (m - n > 0) ? (m - n) : 0;
     int tmax = (l + m < l - n) ? (l + m) : (l - n);
     if (tmin > tmax) return 0.0;
 
     double c2 = cos(beta * 0.5);
     double s2 = sin(beta * 0.5);
-    double norm = sqrt(fact(l + n) * fact(l - n) * fact(l + m) * fact(l - m));
 
     /* Integer powers via repeated squaring (bead su2fft-dyi).  Replaces
      * two libm pow() calls per term with O(log2(2l)) mults each.  The
@@ -95,11 +159,10 @@ static double wigner_d_phys(int l, int n, int m, double beta)
     double sum = 0.0;
     for (int t = tmin; t <= tmax; ++t) {
         double sign  = ((n - m + t) & 1) ? -1.0 : 1.0;
-        double denom = fact(l + m - t) * fact(t)
-                     * fact(n - m + t) * fact(l - n - t);
+        double coeff = demoivre_coeff(l, n, m, t);
         int    pc    = 2*l + m - n - 2*t;
         int    ps    = n - m + 2*t;
-        sum += sign * norm / denom * ipow(c2, pc) * ipow(s2, ps);
+        sum += sign * coeff * ipow(c2, pc) * ipow(s2, ps);
     }
     return sum;
 }
@@ -108,11 +171,17 @@ static double wigner_d_phys(int l, int n, int m, double beta)
  * @brief Evaluate the paper's matrix coefficient P^l_{n,m}(cos theta).
  *
  * Computes P^l_{n,m}(cos theta) = i^{m-n} * d^l_{n,m}(theta), where
- * d^l_{n,m} is the Sakurai-convention real Wigner small-d function evaluated
- * via the de Moivre sum (O(l) terms, bounded factorial ratios).  The i^{m-n}
- * phase factor converts from Sakurai's convention to the paper's normalisation
- * (paper.tex line 537, with the algebraic simplification documented in the
- * file header comment).  Stable in double precision for l up to roughly 25.
+ * d^l_{n,m} is the Sakurai-convention real Wigner small-d function.  The
+ * i^{m-n} phase factor converts from Sakurai's convention to the paper's
+ * normalisation (paper.tex line 537, with the algebraic simplification
+ * documented in the file header comment).
+ *
+ * d^l_{n,m} is obtained from su2_wigner_d_seq, the stable ascending-l
+ * recurrence: it is seeded by 1-2-term de Moivre evaluations at l_min and
+ * l_min+1 (overflow-free via demoivre_coeff) and advanced cancellation-free to
+ * the target l.  This is uniformly stable -- the many-term alternating de
+ * Moivre sum, which cancels catastrophically above l~50 (bead su2fft-258), is
+ * never evaluated at high l.  Reproduces low-l values to machine precision.
  *
  * @param[in] l  Degree, l >= 0.
  * @param[in] n  Row index, -l <= n <= l.
@@ -127,7 +196,12 @@ double _Complex su2_wigner_d(int l, int n, int m, double theta)
     if (abs(n) > l || abs(m) > l) return 0.0 + 0.0*I;
     if (theta == 0.0) return (n == m) ? (1.0 + 0.0*I) : (0.0 + 0.0*I);
 
-    double d = wigner_d_phys(l, n, m, theta);
+    /* Route through the stable ascending-l recurrence (cancellation-free for
+     * all l; the de Moivre sum is used only for the 1-2-term seeds). */
+    int l_min = (abs(n) > abs(m)) ? abs(n) : abs(m);
+    double d_seq[l - l_min + 1];
+    su2_wigner_d_seq(l_min, l, n, m, theta, d_seq);
+    double d = d_seq[l - l_min];
     return pow_i(m - n) * d;
 }
 

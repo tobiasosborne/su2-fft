@@ -117,8 +117,12 @@ Quick reference:
 2. **P^l_{n,m} vs d^l_{n,m} differ by `i^{m-n}`.** The implementation
    carries Sakurai's real `d` and applies `pow_i(m-n)` at the end.
 
-3. **Factorial table is double, capped at 50** (100 in `wigner_arb`).
-   `src/su2_wigner.c::fact()` is precomputed.
+3. **`src/su2_wigner.c` no longer uses a factorial table** (bead
+   `su2fft-258`). The de Moivre seed coefficient is computed by
+   `demoivre_coeff`, an overflow-free balanced incremental product. The
+   public `su2_wigner_d` routes through `su2_wigner_d_seq` (the ascending-l
+   recurrence). The arb path (`su2_wigner_arb.c`) still uses FLINT
+   `arb_fac_ui` (unbounded).
 
 4. **`acb_dft_prod` is forward-only.** Backward = `conj(forward(conj(.)))`.
    Do not "simplify".

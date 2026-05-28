@@ -623,7 +623,19 @@ The stable replacement combines two facts:
                      sin(beta/2)^{n-m+2t}
    ```
 
-   This has `O(l)` terms with bounded factorial ratios; stable to `l ~ 25`.
+   Each term's factorial coefficient is computed overflow-free and to machine
+   precision by `demoivre_coeff` (bead `su2fft-258`): it forms `R = coeff^2`
+   as one running product over integer factors, interleaving numerator
+   multiplies and denominator divides so the running value stays near 1.0
+   (never overflowing), then takes `coeff = sqrt(R)`. The capped double
+   factorial table `fact()` and its `assert(l <= FACT_MAX)` are removed.
+
+   The public `su2_wigner_d` now routes all evaluations through the ascending-l
+   three-term recurrence `su2_wigner_d_seq`, seeded at `l_min` and `l_min + 1`.
+   At `l_min` the de Moivre sum is a single term (zero cancellation), so the
+   seed is evaluated exactly at machine precision and the cancelling many-term
+   sum is never called at high l. Measured against a 256-bit arb reference:
+   l=60 -> 6.9e-17, l=80 -> 4.1e-21, l=75 -> 1.7e-16. (Bead `su2fft-258`.)
 
 2. Substituting the Jacobi-Rodrigues identity into the paper formula and
    simplifying yields
@@ -636,7 +648,8 @@ The stable replacement combines two facts:
    cancel under careful algebra; the result is just the `i^{m-n}` phase
    distinguishing paper's convention from Sakurai's.)
 
-So `su2_wigner_d` evaluates the stable sum and multiplies by `pow_i(m - n)`.
+So `su2_wigner_d` evaluates the recurrence (seeded by the overflow-free de
+Moivre coefficient) and multiplies by `pow_i(m - n)`.
 
 Tests in `tests/test_wigner.c` lock down four invariants:
 
@@ -921,9 +934,9 @@ and `two_m` must have the same parity as `two_l`).
 - `P^{1/2}_{-1/2, 1/2}(beta) = +i sin(beta/2)`
 
 **Cross-check vs integer-l.**  At integer `l in [0, 6]`, `su2_wigner_d_half`
-(calling `tgamma`) agrees with `su2_wigner_d` (using the `fact()` table) to a
-maximum delta of 2.22e-16 (one ULP).  `tgamma` agrees with the precomputed
-double factorial table at machine precision.
+(calling `tgamma`) agrees with `su2_wigner_d` (using `demoivre_coeff` /
+recurrence, bead `su2fft-258`) to a maximum delta of 2.22e-16 (one ULP).
+`tgamma` agrees with the balanced incremental product at machine precision.
 
 **Test coverage.**  `tests/test_wigner.c` gained 82 LOC and 4 new tests:
 spin-1/2 closed-form check (1e-12), at-identity check, unitarity for spin-1/2,

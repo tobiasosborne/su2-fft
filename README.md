@@ -307,14 +307,23 @@ is purely the working-precision rounding.
 
 ## Known limits
 
-The current double-precision Wigner-d evaluator is stable for bandlimits up
-to roughly N ≈ 50. Above that, the seed of the three-term recurrence — a
-direct evaluation via the de Moivre sum — loses double-precision
-significance and corrupts higher-degree coefficients. Bandlimit N=32 is
-comfortably inside the stable regime; the path to N ≥ 100 in double
-precision is a straightforward refactor of the seed using
-arbitrary-precision Jacobi polynomial evaluation at high prec, cast back to
-double.
+The double-precision Wigner-d evaluator is stable well past N=50 (bead
+`su2fft-258`). The previous de Moivre closed-form sum overflowed double at
+171! and accumulated catastrophic cancellation at high l; both are fixed in
+pure double arithmetic. Each term's factorial coefficient is now computed by
+a balanced incremental product (`demoivre_coeff`) that interleaves numerator
+multiplies and denominator divides so the running value stays near 1.0
+(never overflowing), then takes a final sqrt. The public `su2_wigner_d`
+routes all calls through the ascending-l three-term recurrence
+`su2_wigner_d_seq`, seeded at l_min where the de Moivre sum has at most one
+term (zero cancellation). Measured against a 256-bit arb reference:
+l=60 -> 6.9e-17, l=80 -> 4.1e-21.
+
+Resolved-grid spectrum roundtrip `forward(inverse(fhat)) = fhat`, max
+relative error (all finite; was NaN above N~50): N=32 4.14e-14, N=48
+7.18e-14, N=64 4.62e-14, N=96 1.16e-13. The ceiling is now runtime rather
+than precision: N=96 resolved roundtrip runs ~85s (~43s each direction) on a
+15W laptop.
 
 The arbitrary-precision path is unaffected: its Wigner-d evaluation is
 already in ball arithmetic and stable to whatever bandlimit you ask for.

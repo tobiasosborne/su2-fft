@@ -111,6 +111,15 @@ triple, with the same theta across pairs and across all (m, n) at fixed k).
 Sharing that trig across the seed pair — and possibly across all (m, n) at
 fixed k — is the next lever; see bead `su2fft-xxb`.
 
+**Bead `su2fft-258`** replaced the capped double factorial table in the seed
+with `demoivre_coeff`, a balanced incremental product (interleaved
+numerator/denominator factors, final `sqrt`). Same-machine A/B at N=24
+(`build/profile_stages 24 10`): TOTAL 0.3145 s after vs 0.3911 s before
+(~20% faster); seed rate 6.97e6 vs 5.61e6 calls/sec. Seed share is
+unchanged at ~46% of wall. No precision regression: direct-vs-fast max|diff|
+at N=24 fell from 2.21e-13 to 7.1e-17 because `su2_ft_direct`'s
+`su2_wigner_d` also routes through the recurrence now.
+
 ---
 
 ## Confirmation that the fast path is now O(N^4)

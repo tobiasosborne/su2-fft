@@ -18,9 +18,16 @@
  */
 #include "test_framework.h"
 #include "su2.h"
+#include "su2_arb.h"
 
+#include <flint/arb.h>
+#include <flint/acb.h>
+#include <flint/arf.h>
 #include <math.h>
 #include <stdlib.h>
+
+/* Independent arb reference for the real Sakurai small-d; defined below. */
+static double arb_real_d(int l, int n, int m, double theta, slong prec);
 
 /* Legendre P_l(x) via Bonnet's recurrence -- independent reference. */
 static double legendre_P(int l, double x)
@@ -87,10 +94,11 @@ static void test_wigner_unitarity_columns(void)
 
 static void test_wigner_d_seq_matches_phys(void)
 {
-    /* The sequence helper must produce exactly the same d^l_{n,m}(theta)
-     * values as direct evaluation via su2_wigner_d (modulo the i^{m-n} phase).
-     * We test on a grid of (l, m, n, theta) covering the regimes used by
-     * su2_fft Stage 2.
+    /* The sequence helper must reproduce d^l_{n,m}(theta) from an INDEPENDENT
+     * implementation.  su2_wigner_d now routes through su2_wigner_d_seq itself
+     * (bead su2fft-258), so the arb de Moivre sum (su2_wigner_d_arb) is the
+     * only independent reference; we cross-check against it (CLAUDE.md rule 7).
+     * Grid of (l, m, n, theta) covering the regimes used by su2_fft Stage 2.
      */
     int N = 12;
     int l_max = N - 1;
@@ -103,26 +111,11 @@ static void test_wigner_d_seq_matches_phys(void)
         for (int n = -(N - 1); n <= N - 1; ++n) {
             int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
             if (l_min > l_max) continue;
-            for (int k = 1; k < N - 1; ++k) {       /* skip exact endpoints */
+            /* 3 theta samples keep the arb reference cost ~0.5s. */
+            for (int k = 2; k < N - 1; k += 3) {     /* skip exact endpoints */
                 su2_wigner_d_seq(l_min, l_max, n, m, theta[k], d_seq);
                 for (int l = l_min; l <= l_max; ++l) {
-                    /* Pull out the i^{m-n} phase: P / i^{m-n} = d (real). */
-                    double _Complex P = su2_wigner_d(l, n, m, theta[k]);
-                    /* d = P * i^{n-m} (= P / i^{m-n}).  Since d is real and
-                     * i^{n-m} has unit modulus, just take real part. */
-                    /* Equivalent: P / pow_i(m-n).  Use multiplication by
-                     * conj(pow_i(m-n)) = pow_i(n-m). */
-                    int r = ((n - m) % 4 + 4) % 4;
-                    double _Complex phase_inv;
-                    switch (r) {
-                        case 0: phase_inv =  1.0 + 0.0*I; break;
-                        case 1: phase_inv =  0.0 + 1.0*I; break;
-                        case 2: phase_inv = -1.0 + 0.0*I; break;
-                        default: phase_inv = 0.0 - 1.0*I; break;
-                    }
-                    double _Complex want_complex = P * phase_inv;
-                    /* d is real, so imag(want_complex) should be ~0. */
-                    double want = creal(want_complex);
+                    double want = arb_real_d(l, n, m, theta[k], 64);
                     ASSERT_NEAR(d_seq[l - l_min], want, tol);
                 }
             }
@@ -223,6 +216,113 @@ static void test_wigner_half_unitarity(void)
     }
 }
 
+/* ------- High-l regression (bead: factorial-table overflow in src) -------
+ *
+ * src/su2_wigner.c evaluates the real Sakurai small-d via a de Moivre sum
+ * using a double factorial table capped at FACT_MAX=100 (returns 0.0 above)
+ * and plain double arithmetic.  Above l~50 this returns NaN/garbage:
+ * factorial arguments reach 2l>100 (table cap -> 0 -> 0/0 = NaN) and doubles
+ * overflow at 171!.  su2_wigner_d_seq seeds via that broken path.
+ *
+ * The arbitrary-precision routine su2_wigner_d_arb is correct at any l, so it
+ * is the ground truth here.  These tests pin the desired post-fix behaviour:
+ * finiteness and agreement with arb at l in {60, 80}.  They FAIL now (red).
+ */
+
+/* Recover the REAL Sakurai small-d d^l_{n,m}(theta) from the arb routine,
+ * which returns the paper coefficient P^l_{n,m} = i^{m-n} * d.  See the
+ * parity-of-(m-n) recovery in su2_arb.h's documented convention. */
+static double arb_real_d(int l, int n, int m, double theta, slong prec)
+{
+    acb_t P;
+    acb_init(P);
+    arb_t th;
+    arb_init(th);
+    arb_set_d(th, theta);
+    su2_wigner_d_arb(P, l, n, m, th, prec);
+    int r = ((m - n) % 4 + 4) % 4;
+    double d;
+    switch (r) {
+        case 0: d =  arf_get_d(arb_midref(acb_realref(P)), ARF_RND_NEAR); break;
+        case 1: d =  arf_get_d(arb_midref(acb_imagref(P)), ARF_RND_NEAR); break;
+        case 2: d = -arf_get_d(arb_midref(acb_realref(P)), ARF_RND_NEAR); break;
+        default: d = -arf_get_d(arb_midref(acb_imagref(P)), ARF_RND_NEAR); break;
+    }
+    arb_clear(th);
+    acb_clear(P);
+    return d;
+}
+
+static void test_wigner_d_seq_high_l_matches_arb(void)
+{
+    /* (n, m, theta) with l_min = max(|n|,|m|) in {60, 80, 75}. */
+    struct { int n, m; double theta; } cases[] = {
+        { 60,  55, 0.7 },
+        {-20, -80, 1.9 },   /* l_min = 80 */
+        { 75,  75, 0.4 },
+    };
+    int ncases = (int)(sizeof(cases) / sizeof(cases[0]));
+
+    for (int c = 0; c < ncases; ++c) {
+        int n = cases[c].n, m = cases[c].m;
+        double theta = cases[c].theta;
+        int l_min = (abs(n) > abs(m)) ? abs(n) : abs(m);
+
+        /* Single-value seed: l_max == l_min. */
+        double out0 = 0.0;
+        su2_wigner_d_seq(l_min, l_min, n, m, theta, &out0);
+        ASSERT_TRUE(isfinite(out0));
+        double want0 = arb_real_d(l_min, n, m, theta, 256);
+        ASSERT_NEAR(out0, want0, 1e-13);
+
+        /* Two-term second seed plus a few recurrence steps: l_max = l_min+3. */
+        int l_max = l_min + 3;
+        double out_d[4];   /* l_max - l_min + 1 == 4 */
+        su2_wigner_d_seq(l_min, l_max, n, m, theta, out_d);
+        for (int l = l_min; l <= l_max; ++l) {
+            double got  = out_d[l - l_min];
+            ASSERT_TRUE(isfinite(got));
+            double want = arb_real_d(l, n, m, theta, 256);
+            ASSERT_NEAR(got, want, 1e-12);
+        }
+    }
+}
+
+static void test_wigner_d_high_l_matches_arb(void)
+{
+    /* The public su2_wigner_d returns the complex P^l_{n,m}.  Compare the
+     * full complex acb midpoint (real and imag) at l in {60, 80}. */
+    struct { int l, n, m; double theta; } cases[] = {
+        { 60, 60,  55, 0.7 },
+        { 80,-20, -80, 1.9 },
+        { 75, 75,  75, 0.4 },
+    };
+    int ncases = (int)(sizeof(cases) / sizeof(cases[0]));
+
+    for (int c = 0; c < ncases; ++c) {
+        int l = cases[c].l, n = cases[c].n, m = cases[c].m;
+        double theta = cases[c].theta;
+
+        double _Complex got = su2_wigner_d(l, n, m, theta);
+        ASSERT_TRUE(isfinite(creal(got)));
+        ASSERT_TRUE(isfinite(cimag(got)));
+
+        acb_t P;
+        acb_init(P);
+        arb_t th;
+        arb_init(th);
+        arb_set_d(th, theta);
+        su2_wigner_d_arb(P, l, n, m, th, 256);
+        double want_re = arf_get_d(arb_midref(acb_realref(P)), ARF_RND_NEAR);
+        double want_im = arf_get_d(arb_midref(acb_imagref(P)), ARF_RND_NEAR);
+        arb_clear(th);
+        acb_clear(P);
+
+        double _Complex want = want_re + want_im * I;
+        ASSERT_CNEAR(got, want, 1e-13);
+    }
+}
+
 int main(void)
 {
     RUN(test_wigner_legendre_special);
@@ -234,5 +334,7 @@ int main(void)
     RUN(test_wigner_half_spin_half_closed_form);
     RUN(test_wigner_half_matches_integer);
     RUN(test_wigner_half_unitarity);
+    RUN(test_wigner_d_seq_high_l_matches_arb);
+    RUN(test_wigner_d_high_l_matches_arb);
     TEST_REPORT_AND_EXIT();
 }
