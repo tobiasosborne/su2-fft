@@ -140,6 +140,28 @@ void su2_fft(int N,
              const double _Complex *f,
              double _Complex *fhat);
 
+/* ------- Real-input fast FFT (bead su2fft-4v7) -------
+ * Cost: O(N^4), with ~half the Stage-2 constant of su2_fft.
+ *
+ * Forward FFT for REAL input f.  Produces the SAME full fhat (length
+ * su2_total_coeffs(N)) that su2_fft produces on the complexified input
+ * f + 0i.  Halves the Stage-2 (m, n) sweeps using the Hermitian symmetry
+ * of the dual for real f:
+ *
+ *   fhat(l)_{m,n} = (-1)^{m-n} * conj( fhat(l)_{-m,-n} )
+ *
+ * (verified to 1.4e-17 at N=6).  Only canonical pairs (n>0, or n==0 && m>=0)
+ * are evaluated; the rest are filled by the symmetry.  The (m,n)=(0,0)
+ * coefficient is self-paired, so fhat(l)_{0,0} is real.
+ *
+ * @param[in]  N     Bandlimit.
+ * @param[in]  f     Length-N^3 REAL sample array, row-major (j1, k, j2).
+ * @param[out] fhat  Length-su2_total_coeffs(N) complex coefficient array.
+ */
+void su2_fft_real(int N,
+                  const double *f,
+                  double _Complex *fhat);
+
 /* ------- Inverse FFT (Peter-Weyl synthesis) -------
  * Cost: O(N^4) -- mirrors su2_fft structurally.
  *

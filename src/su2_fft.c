@@ -38,37 +38,25 @@
 #include <string.h>
 
 /**
- * @brief Fast O(N^4) Fourier transform on SU(2) via 2-D FFTW + Wigner inner product.
+ * @brief Stage 1 of the forward FFT: per-theta-slice closed-grid fold +
+ *        (N-1)x(N-1) backward 2-D FFTW + (-1)^{n+m} phase -> F2[k, n, m].
  *
- * Produces the same fhat as su2_ft_direct() (to floating-point tolerance) by
- * separating the phi/psi and theta summations into two stages:
+ * Shared verbatim by su2_fft (complex input) and su2_fft_real (real input,
+ * promoted to a zero-imaginary complex buffer).  Factored out of su2_fft so the
+ * two entry points cannot drift; su2_fft's observable behaviour is unchanged.
  *
- *   Stage 1 (O(N^3 log N)): For each theta-slice k, fold the closed grid
- *     endpoints and apply a (N-1)x(N-1) backward 2-D FFTW plan to obtain
- *     F2[k, n, m] (paper.tex line 1347).  A (-1)^{n+m} factor restores the
- *     half-shift from the closed grid; see ALGORITHM.md Section 2.2.
+ * F2 must point to N * (2N-1) * (2N-1) complex slots, indexed as
+ *   F2[k*stride_k + (n+N-1)*stride_n + (m+N-1)],
+ * with stride_n = 2N-1 and stride_k = (2N-1)^2 (see callers).
  *
- *   Stage 2 (O(N^4)): For each coefficient (l, m, n), evaluate the length-N
- *     dot product against conj(P^l_{n,m}(cos theta_k)) * sin(theta_k)
- *     (paper.tex line 1361, eq EQ_OP_1).  O(N^3) coefficients x O(N) per dot
- *     product gives the headline O(N^4) (paper Theorem TEO_FIN, line 1455).
- *
- * @param[in]  N     Bandlimit; grid is N x N x N, coefficients span l < N.
- * @param[in]  f     Length-N^3 complex sample array, row-major (j1, k, j2).
- * @param[out] fhat  Length-su2_total_coeffs(N) complex coefficient array.
- * @par Complexity O(N^4) flops; O(N^3) auxiliary memory for F2.
- * @par Reference paper.tex lines 1347, 1361, 1455; ALGORITHM.md Section 2.2.
+ * @par Reference paper.tex line 1347; ALGORITHM.md Section 2.2.
  */
-void su2_fft(int N,
-             const double _Complex *f,
-             double _Complex *fhat)
+static void su2_fft_stage1(int N,
+                           const double _Complex *f,
+                           double _Complex *F2)
 {
-    if (N < 2 || !f || !fhat) return;
-
     const int M = N - 1;
-    double *theta = su2_grid_theta(N);
 
-    /* -------- Stage 1 -------- */
     fftw_complex *g = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
     fftw_complex *G = fftw_malloc(sizeof(fftw_complex) * (size_t)M * (size_t)M);
     fftw_plan plan  = fftw_plan_dft_2d(M, M, g, G, FFTW_BACKWARD, FFTW_ESTIMATE);
@@ -76,7 +64,6 @@ void su2_fft(int N,
     const int    nrange   = 2 * N - 1;
     const size_t stride_n = (size_t)nrange;
     const size_t stride_k = (size_t)nrange * (size_t)nrange;
-    double _Complex *F2 = malloc((size_t)N * stride_k * sizeof(double _Complex));
 
     for (int k = 0; k < N; ++k) {
         memset(g, 0, sizeof(fftw_complex) * (size_t)M * (size_t)M);
@@ -108,6 +95,45 @@ void su2_fft(int N,
     fftw_destroy_plan(plan);
     fftw_free(g);
     fftw_free(G);
+}
+
+/**
+ * @brief Fast O(N^4) Fourier transform on SU(2) via 2-D FFTW + Wigner inner product.
+ *
+ * Produces the same fhat as su2_ft_direct() (to floating-point tolerance) by
+ * separating the phi/psi and theta summations into two stages:
+ *
+ *   Stage 1 (O(N^3 log N)): For each theta-slice k, fold the closed grid
+ *     endpoints and apply a (N-1)x(N-1) backward 2-D FFTW plan to obtain
+ *     F2[k, n, m] (paper.tex line 1347).  A (-1)^{n+m} factor restores the
+ *     half-shift from the closed grid; see ALGORITHM.md Section 2.2.
+ *
+ *   Stage 2 (O(N^4)): For each coefficient (l, m, n), evaluate the length-N
+ *     dot product against conj(P^l_{n,m}(cos theta_k)) * sin(theta_k)
+ *     (paper.tex line 1361, eq EQ_OP_1).  O(N^3) coefficients x O(N) per dot
+ *     product gives the headline O(N^4) (paper Theorem TEO_FIN, line 1455).
+ *
+ * @param[in]  N     Bandlimit; grid is N x N x N, coefficients span l < N.
+ * @param[in]  f     Length-N^3 complex sample array, row-major (j1, k, j2).
+ * @param[out] fhat  Length-su2_total_coeffs(N) complex coefficient array.
+ * @par Complexity O(N^4) flops; O(N^3) auxiliary memory for F2.
+ * @par Reference paper.tex lines 1347, 1361, 1455; ALGORITHM.md Section 2.2.
+ */
+void su2_fft(int N,
+             const double _Complex *f,
+             double _Complex *fhat)
+{
+    if (N < 2 || !f || !fhat) return;
+
+    double *theta = su2_grid_theta(N);
+
+    /* -------- Stage 1 (shared with su2_fft_real) -------- */
+    const int    nrange   = 2 * N - 1;
+    const size_t stride_n = (size_t)nrange;
+    const size_t stride_k = (size_t)nrange * (size_t)nrange;
+    double _Complex *F2 = malloc((size_t)N * stride_k * sizeof(double _Complex));
+
+    su2_fft_stage1(N, f, F2);
 
     /* -------- Stage 2 -------- */
     /* Recurrence-based sweep (bead su2fft-m21). For each (m, n), sweep
@@ -167,6 +193,140 @@ void su2_fft(int N,
             double _Complex c = norm * phase;
             for (int l = l_min; l < N; ++l) {
                 fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)] = c * acc[l];
+            }
+        }
+    }
+
+    free(acc);
+    free(d_seq);
+    free(sin_th);
+    free(F2);
+    free(theta);
+}
+
+/**
+ * @brief Forward O(N^4) FFT for REAL input, exploiting Hermitian symmetry of
+ *        the dual to halve the Stage-2 (m, n) sweeps (bead su2fft-4v7).
+ *
+ * Produces the SAME full fhat (length su2_total_coeffs(N)) that su2_fft would
+ * produce on the complexified real input f + 0i.  Stage 1 is identical (the
+ * real samples are promoted to a zero-imaginary complex buffer and the shared
+ * su2_fft_stage1 is run unchanged).
+ *
+ * Symmetry (VERIFIED -- max deviation 1.4e-17 at N=6; NOT the unsigned form):
+ *   fhat(l)_{m,n} = (-1)^{m-n} * conj( fhat(l)_{-m,-n} ).
+ * Derivation: from paper.tex line 1361 (eq EQ_OP_1),
+ *   fhat(l)_{m,n} = norm * sum_k [s]_k * conj(P^l_{n,m}(cos theta_k)),
+ * with [s]_k built from F2[k,n,m].  For real f, conjugating and using
+ *   P^l_{n,m} = i^{m-n} d^l_{n,m}  (HANDOFF.md §2 item 2),
+ *   d^l_{-n,-m} = (-1)^{m-n} d^l_{n,m}  (Wigner-d symmetry),
+ * and the index reflection (n,m) -> (-n,-m) in Stage 1 of the real DFT, the
+ * pair (m,n) and (-m,-n) collapse onto each other up to the (-1)^{m-n} sign.
+ * The (m,n)=(0,0) coefficient is self-paired, hence fhat(l)_{0,0} is real.
+ *
+ * Only CANONICAL pairs (n>0, or n==0 && m>=0) are evaluated via the same
+ * recurrence/phase/norm as su2_fft; the complementary NON-canonical entries
+ * are filled by the symmetry, halving the Stage-2 work.
+ *
+ * @param[in]  N     Bandlimit; grid is N x N x N, coefficients span l < N.
+ * @param[in]  f     Length-N^3 REAL sample array, row-major (j1, k, j2).
+ * @param[out] fhat  Length-su2_total_coeffs(N) complex coefficient array.
+ * @par Complexity O(N^4) flops, ~half the Stage-2 constant of su2_fft.
+ * @par Reference paper.tex line 1361 (eq EQ_OP_1); ALGORITHM.md Section 2.2.
+ */
+void su2_fft_real(int N,
+                  const double *f,
+                  double _Complex *fhat)
+{
+    if (N < 2 || !f || !fhat) return;
+
+    double *theta = su2_grid_theta(N);
+
+    /* -------- Stage 1 (shared with su2_fft) -------- */
+    /* Promote the real input to a zero-imaginary complex buffer, then run the
+     * SAME Stage 1.  This is the only extra O(N^3) work vs su2_fft. */
+    const size_t nsamp = (size_t)N * (size_t)N * (size_t)N;
+    double _Complex *fc = malloc(nsamp * sizeof(double _Complex));
+    for (size_t i = 0; i < nsamp; ++i) fc[i] = f[i] + 0.0 * I;
+
+    const int    nrange   = 2 * N - 1;
+    const size_t stride_n = (size_t)nrange;
+    const size_t stride_k = (size_t)nrange * (size_t)nrange;
+    double _Complex *F2 = malloc((size_t)N * stride_k * sizeof(double _Complex));
+
+    su2_fft_stage1(N, fc, F2);
+    free(fc);
+
+    /* -------- Stage 2 (canonical (m,n) only) --------
+     * Identical recurrence/phase/norm as su2_fft (paper.tex line 1361,
+     * eq EQ_OP_1), but the (m,n) sweep is restricted to canonical pairs.
+     * Non-canonical entries are filled from the Hermitian symmetry below.
+     */
+    const double dphi   = 2.0 * M_PI / (double)(N - 1);
+    const double dtheta =       M_PI / (double)(N - 1);
+    const double dpsi   = 2.0 * M_PI / (double)(N - 1);
+    const double norm   = dphi * dtheta * dpsi / (8.0 * M_PI * M_PI);
+
+    double *sin_th = malloc((size_t)N * sizeof(double));
+    for (int k = 0; k < N; ++k) sin_th[k] = sin(theta[k]);
+
+    double          *d_seq = malloc((size_t)N * sizeof(double));
+    double _Complex *acc   = malloc((size_t)N * sizeof(double _Complex));
+
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            /* Canonical: n > 0, or n == 0 && m >= 0.  Partner (-m,-n) is then
+             * non-canonical and gets filled by the symmetry in the second pass. */
+            int is_canonical = (n > 0) || (n == 0 && m >= 0);
+            if (!is_canonical) continue;
+
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > N - 1) continue;
+
+            for (int l = l_min; l < N; ++l) acc[l] = 0.0 + 0.0*I;
+
+            for (int k = 0; k < N; ++k) {
+                su2_wigner_d_seq(l_min, N - 1, n, m, theta[k], d_seq);
+                double _Complex w = F2[(size_t)k * stride_k
+                                       + (size_t)(n + N - 1) * stride_n
+                                       + (size_t)(m + N - 1)] * sin_th[k];
+                for (int l = l_min; l < N; ++l) {
+                    acc[l] += d_seq[l - l_min] * w;
+                }
+            }
+
+            int r = ((n - m) % 4 + 4) % 4;
+            double _Complex phase;
+            switch (r) {
+                case 0:  phase =  1.0 + 0.0*I; break;
+                case 1:  phase =  0.0 + 1.0*I; break;
+                case 2:  phase = -1.0 + 0.0*I; break;
+                default: phase =  0.0 - 1.0*I; break;
+            }
+            double _Complex c = norm * phase;
+            for (int l = l_min; l < N; ++l) {
+                fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)] = c * acc[l];
+            }
+        }
+    }
+
+    /* -------- Second pass: fill non-canonical (m,n) by symmetry --------
+     * fhat(l)_{m,n} = (-1)^{m-n} * conj(fhat(l)_{-m,-n}); the partner is
+     * canonical and already computed above.  s = (-1)^{m-n}. */
+    for (int m = -(N - 1); m <= N - 1; ++m) {
+        for (int n = -(N - 1); n <= N - 1; ++n) {
+            int is_canonical = (n > 0) || (n == 0 && m >= 0);
+            if (is_canonical) continue;
+
+            int l_min = (abs(m) > abs(n)) ? abs(m) : abs(n);
+            if (l_min > N - 1) continue;
+
+            double s = ((m - n) & 1) ? -1.0 : 1.0;   /* (-1)^{m-n} */
+            for (int l = l_min; l < N; ++l) {
+                double _Complex partner =
+                    fhat[su2_coeff_offset(l) + su2_mn_index(l, -m, -n)];
+                fhat[su2_coeff_offset(l) + su2_mn_index(l, m, n)] =
+                    s * conj(partner);
             }
         }
     }

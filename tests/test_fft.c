@@ -77,10 +77,55 @@ static void test_fft_matches_direct_constant(void)
     free(f); free(fhat_direct); free(fhat_fast);
 }
 
+static void test_fft_real_matches_complex(void)
+{
+    /* su2_fft_real(N, f, .) must equal su2_fft(N, f + 0i, .) on the full
+     * coefficient array.  It only differs by exploiting the Hermitian dual
+     * symmetry fhat(l)_{m,n} = (-1)^{m-n} conj(fhat(l)_{-m,-n}) (bead 4v7);
+     * the produced spectrum is byte-for-byte the same up to FP roundoff. */
+    seed_rand(20260528);
+    int Ns[] = {5, 6, 8};
+    for (size_t t = 0; t < sizeof(Ns) / sizeof(Ns[0]); ++t) {
+        int N = Ns[t];
+        size_t nsamp  = (size_t)N * N * N;
+        size_t ncoeff = su2_total_coeffs(N);
+
+        double          *f         = malloc(nsamp  * sizeof(double));
+        double _Complex *fc        = malloc(nsamp  * sizeof(double _Complex));
+        double _Complex *fhat_real = calloc(ncoeff, sizeof(double _Complex));
+        double _Complex *fhat_full = calloc(ncoeff, sizeof(double _Complex));
+
+        for (size_t i = 0; i < nsamp; ++i) {
+            f[i]  = urand() - 0.5;
+            fc[i] = f[i] + 0.0 * I;
+        }
+
+        su2_fft_real(N, f,  fhat_real);
+        su2_fft     (N, fc, fhat_full);
+
+        double max_err = 0.0;
+        for (size_t i = 0; i < ncoeff; ++i) {
+            double d = cabs(fhat_real[i] - fhat_full[i]);
+            if (d > max_err) max_err = d;
+            ASSERT_CNEAR(fhat_real[i], fhat_full[i], 1e-13);
+        }
+        fprintf(stderr, "[N=%d max_err=%.2e] ", N, max_err);
+
+        /* fhat(l)_{0,0} is self-paired, hence real: |imag| ~ 0. */
+        for (int l = 0; l < N && l < 3; ++l) {
+            double _Complex c00 = fhat_real[su2_coeff_offset(l) + su2_mn_index(l, 0, 0)];
+            ASSERT_NEAR(cimag(c00), 0.0, 1e-13);
+        }
+
+        free(f); free(fc); free(fhat_real); free(fhat_full);
+    }
+}
+
 int main(void)
 {
     RUN(test_fft_zero_input);
     RUN(test_fft_matches_direct_random);
     RUN(test_fft_matches_direct_constant);
+    RUN(test_fft_real_matches_complex);
     TEST_REPORT_AND_EXIT();
 }

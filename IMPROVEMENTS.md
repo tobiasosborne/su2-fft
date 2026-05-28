@@ -95,14 +95,45 @@ the Jacobi recurrence coefficients, (c) new FFTW plans for the extended grid,
 `su2fft-erv` (SO(3) FFT).  Bead `su2fft-5fb` (integer-l spherical FFT)
 shipped without `u9q`; see item 13 below.
 
-### 6. Real-input symmetry shortcut
+### ~~6. Real-input symmetry shortcut~~ — DONE (su2fft-4v7)
 
-For real-valued `f`, `fhat(l)_{m,n} = conj(fhat(l)_{-m,-n})` (Hermitian
-symmetry on the dual).  Compute only `n ≥ 0` or `m + n ≥ 0`, halving both
-work and storage.  Common case in physics simulations of real fields on S³.
+Shipped in bead `su2fft-4v7`.  New entry point
+`su2_fft_real(int N, const double *f, double _Complex *fhat)` in
+`src/su2_fft.c`.  Takes a real-valued sample array and produces the same full
+`fhat` as `su2_fft` on the complexified input.
 
-Touches: new entry point `su2_fft_real(int N, const double *f, double _Complex *fhat)`
-in `src/su2_fft.c`; ships alongside the complex version.
+**Signed Hermitian symmetry.**  The correct relation is
+
+```
+fhat(l)_{m,n} = (-1)^{m-n} * conj( fhat(l)_{-m,-n} )
+```
+
+Derivation: substitute `P^l_{n,m} = i^{m-n} d^l_{n,m}` in the analysis sum
+(paper.tex lines 1316/1361); take the conjugate using `f` real; apply the
+Wigner-d parity `d^l_{-n,-m}(beta) = (-1)^{m-n} d^l_{n,m}(beta)`.  The
+`(-1)^{m-n}` sign is essential.  The bead's original description stated the
+relation without this sign (wrong); the unsigned form deviates by ~0.1 at
+N=6.
+
+**Implementation.**  Stage 1 of `su2_fft` was extracted into a shared static
+helper `su2_fft_stage1`, called identically by both `su2_fft` and
+`su2_fft_real` (`su2_fft` output is unchanged).  `su2_fft_real` promotes the
+real input to complex, runs the shared Stage 1, computes Stage 2 only for
+canonical `(m, n)` pairs where `(n > 0)` or `(n == 0 && m >= 0)`, then fills
+the non-canonical partners via the signed symmetry above.  The `(0,0)`
+diagonal entry is self-paired, so `fhat(l)_{0,0}` is real.
+
+**Cross-check vs `su2_fft` on random real input:**
+- N=5: max error 6.94e-18
+- N=6: max error 7.76e-18
+- N=8: max error 8.00e-18
+- `|imag fhat(l)_{0,0}|` < 1e-13
+
+**Speedup (Stage 2 dominates the double path; halving the (m,n) sweep gives
+~2x; Stage 1 is shared; real->complex promote is O(N^3) overhead):**
+- N=16: 1.91x
+- N=24: 1.90x
+- N=32: 2.00x
 
 ### ~~7. Inverse FFT (synthesis) `su2_fft_inv`~~ — DONE (3lx)
 
@@ -340,3 +371,9 @@ Bead `su2fft-5fb` shipped spherical-harmonic FFT (`src/su2_sphere.c`, 138 LOC;
 744/744 Julia tests.  Y_0^0 synthesis: 1e-13.  Y_1^0 synthesis: 1e-12.  Constant
 forward at N=8: fhat_sph[0] = 1.284 (closed-grid floor).  Inherits `0t1` aliasing
 caveat.  Unblocks `su2fft-cce` (weather-data sphere FFT visualisation).
+
+Bead `su2fft-4v7` shipped `su2_fft_real` (real-input forward FFT with signed
+Hermitian symmetry `fhat(l)_{m,n} = (-1)^{m-n} conj(fhat(l)_{-m,-n})`).
+Stage 2 computed over canonical (m,n) pairs only; non-canonical partners filled
+by symmetry.  Cross-check vs `su2_fft` max error 8.00e-18 at N=8; `|imag
+fhat(l)_{0,0}|` < 1e-13.  Measured speedup 1.91x/1.90x/2.00x at N=16/24/32.

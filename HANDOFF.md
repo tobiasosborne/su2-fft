@@ -49,6 +49,7 @@ Four implementations of the SU(2) FFT, plus three derived transforms:
 | `su2_fft_inv`         | Peter-Weyl synthesis (closed)     | O(N^4)        | shipped (bead `3lx`) |
 | `su2_fft_gl`          | forward with Gauss-Legendre theta | O(N^4)        | shipped (bead `ega`) |
 | `su2_fft_inv_gl`      | inverse at GL theta nodes         | O(N^4)        | shipped (bead `ega`) |
+| `su2_fft_real`        | forward, real input; halves Stage-2 (m,n) sweep via signed Hermitian symmetry; ~2x speedup | O(N^4) | shipped (bead `4v7`) |
 | `su2_fft_resolved`    | forward, open P=2N-1 phi/psi + GL theta; exact roundtrip | O(N^4) | shipped (bead `0t1`) |
 | `su2_fft_resolved_inv`| inverse on resolved grid          | O(N^4)        | shipped (bead `0t1`) |
 | `su2_ft_direct_arb`   | arb (acb_t) direct reference (legacy closed) | brute O(N^6)  | shipped    |
@@ -236,6 +237,7 @@ toward is complete.
 | `5fb`   | Spherical FFT on S^2 (thin wrapper)           | `src/su2_sphere.c` header               |
 | `0t1`   | Resolved-grid FFT (open P=2N-1 phi/psi + GL theta; exact spectrum roundtrip 4.45e-15 at N=8) | `notes/0t1_resolved_grid_design.md` |
 | `rrx`   | Arb-precision resolved-grid roundtrip (4.40e-72 at N=8, prec=256) | `notes/0t1_resolved_grid_design.md` §8; `tests/test_resolved_arb.c` |
+| `4v7`   | Real-input FFT (`su2_fft_real`): signed Hermitian symmetry, ~2x speedup | `ALGORITHM.md §3.8` |
 
 The `notes/` design briefs are gold — they contain the math derivations,
 the failure modes that were caught during research, and the implementation

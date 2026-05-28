@@ -580,6 +580,62 @@ The full test log and per-test tolerances are in
 
 ---
 
+## 3.8 Real-input Hermitian shortcut (bead `su2fft-4v7`)
+
+`su2_fft_real(int N, const double *f, double _Complex *fhat)` in
+`src/su2_fft.c` is a forward FFT for real-valued input that produces the same
+full `fhat` array as `su2_fft` on the complexified input, at approximately half
+the Stage-2 cost.
+
+### Symmetry
+
+When `f` is real, the coefficient array satisfies the signed Hermitian relation
+
+```
+fhat(l)_{m,n} = (-1)^{m-n} * conj( fhat(l)_{-m,-n} )          (paper 1316/1361)
+```
+
+Derivation: substitute `P^l_{n,m} = i^{m-n} d^l_{n,m}` (paper line 534) into
+the analysis sum; take the complex conjugate of both sides using the reality of
+`f`; apply the Wigner-d reflection identity
+`d^l_{-n,-m}(beta) = (-1)^{m-n} d^l_{n,m}(beta)`.  The `(-1)^{m-n}` sign is
+a genuine feature of the relation, not a convention.  The unsigned form
+`fhat(l)_{m,n} = conj(fhat(l)_{-m,-n})` is wrong; it deviates by ~0.1 at
+N=6 and is NOT the correct symmetry.  Verified numerically at max deviation
+1.4e-17 (N=6) for the signed form.
+
+### Implementation
+
+Stage 1 of `su2_fft` was extracted into a shared static helper `su2_fft_stage1`,
+called by both `su2_fft` and `su2_fft_real`; the `su2_fft` output is unchanged.
+`su2_fft_real`:
+1. Promotes the real input to complex (O(N^3) overhead).
+2. Calls `su2_fft_stage1` (identical to `su2_fft`).
+3. Runs Stage 2 only over canonical `(m, n)` pairs: those with `(n > 0)` or
+   `(n == 0 && m >= 0)` — one half of the dual lattice.
+4. Fills the non-canonical partners via `fhat(l)_{m,n} = (-1)^{m-n} conj(fhat(l)_{-m,-n})`.
+
+The `(m, n) = (0, 0)` entry is its own pair under the reflection, so
+`fhat(l)_{0,0}` is real; `|imag fhat(l)_{0,0}| < 1e-13` in the cross-check.
+
+### Cross-check and speedup
+
+Cross-check (`su2_fft_real` vs `su2_fft` on random real input):
+- N=5: max error 6.94e-18
+- N=6: max error 7.76e-18
+- N=8: max error 8.00e-18
+
+Speedup (same machine, real input):
+- N=16: 1.91x
+- N=24: 1.90x
+- N=32: 2.00x
+
+Stage 2 dominates the double path; halving the (m, n) sweep delivers ~2x.
+Stage 1 is shared and the real→complex promote is O(N^3) overhead, both small
+relative to Stage 2 at these N.
+
+---
+
 ## 4. Why this works
 
 The reduction from O(N^6) to O(N^4) is one observation:
